@@ -7,7 +7,7 @@ use rdkafka::{
     consumer::{BaseConsumer, Consumer, ConsumerContext, StreamConsumer},
     error::KafkaError,
     message::{Headers, OwnedHeaders},
-    producer::{FutureProducer, FutureRecord},
+    producer::{FutureProducer, FutureRecord, Producer},
     types::RDKafkaErrorCode,
     util::Timeout,
     ClientConfig, ClientContext, Message, Offset, TopicPartitionList,
@@ -157,12 +157,15 @@ impl KafkaBufferProducer {
         let mut cfg = ClientConfig::new();
 
         // these configs can be overwritten
-        cfg.set("message.timeout.ms", "5000");
+        cfg.set("broker.address.ttl", "5000");
+        cfg.set("compression.type", "snappy");
+        cfg.set("connections.max.idle.ms", "5000");
         cfg.set("message.max.bytes", "31457280");
         cfg.set("message.send.max.retries", "10");
+        cfg.set("message.timeout.ms", "5000");
         cfg.set("queue.buffering.max.kbytes", "31457280");
         cfg.set("request.required.acks", "all"); // equivalent to acks=-1
-        cfg.set("compression.type", "snappy");
+        cfg.set("socket.timeout.ms", "5000");
         cfg.set("statistics.interval.ms", "15000");
 
         // user overrides
@@ -171,8 +174,8 @@ impl KafkaBufferProducer {
         }
 
         // these configs are set in stone
-        cfg.set("bootstrap.servers", &conn);
         cfg.set("allow.auto.create.topics", "false");
+        cfg.set("bootstrap.servers", &conn);
 
         // handle auto-creation
         let partitions =
@@ -180,6 +183,13 @@ impl KafkaBufferProducer {
 
         let context = ClientContextImpl::new(database_name.clone(), metric_registry);
         let producer: FutureProducer<ClientContextImpl> = cfg.create_with_context(context)?;
+
+        // install our connection callback for better tcp management
+        let native_client = producer.client().native_ptr();
+        let native_conf = unsafe { rdkafka_sys::bindings::rd_kafka_conf(native_client) as *mut _ };
+        unsafe {
+            rdkafka_sys::bindings::rd_kafka_conf_set_connect_cb(native_conf, Some(connect_cb))
+        };
 
         Ok(Self {
             conn,
@@ -382,9 +392,12 @@ impl KafkaBufferConsumer {
         let mut cfg = ClientConfig::new();
 
         // these configs can be overwritten
-        cfg.set("session.timeout.ms", "6000");
-        cfg.set("statistics.interval.ms", "15000");
+        cfg.set("broker.address.ttl", "5000");
+        cfg.set("connections.max.idle.ms", "5000");
         cfg.set("queued.max.messages.kbytes", "10000");
+        cfg.set("session.timeout.ms", "6000");
+        cfg.set("socket.timeout.ms", "5000");
+        cfg.set("statistics.interval.ms", "15000");
 
         // user overrides
         for (k, v) in connection_config {
@@ -392,9 +405,9 @@ impl KafkaBufferConsumer {
         }
 
         // these configs are set in stone
+        cfg.set("allow.auto.create.topics", "false");
         cfg.set("bootstrap.servers", &conn);
         cfg.set("enable.auto.commit", "false");
-        cfg.set("allow.auto.create.topics", "false");
 
         // Create a unique group ID for this database's consumer as we don't want to create
         // consumer groups.
@@ -416,6 +429,17 @@ impl KafkaBufferConsumer {
                 let context = ClientContextImpl::new(database_name.clone(), metric_registry);
                 let consumer: StreamConsumer<ClientContextImpl> =
                     cfg.create_with_context(context)?;
+
+                // install our connection callback for better tcp management
+                let native_client = consumer.client().native_ptr();
+                let native_conf =
+                    unsafe { rdkafka_sys::bindings::rd_kafka_conf(native_client) as *mut _ };
+                unsafe {
+                    rdkafka_sys::bindings::rd_kafka_conf_set_connect_cb(
+                        native_conf,
+                        Some(connect_cb),
+                    )
+                };
 
                 let mut assignment = TopicPartitionList::new();
                 assignment.add_partition(&database_name, partition as i32);
@@ -780,6 +804,45 @@ pub mod test_utils {
         let result = results.pop().expect("just checked the vector length");
         result.unwrap();
     }
+}
+
+extern "C" fn connect_cb(
+    sockfd: libc::c_int,
+    addr: *const libc::sockaddr,
+    addrlen: libc::c_int,
+    _id: *const libc::c_char,
+    _opaque: *mut libc::c_void,
+) -> libc::c_int {
+    // convert addrlen to correct type
+    if addrlen < 0 {
+        return -1;
+    }
+    let addrlen = addrlen as libc::c_uint;
+
+    // connect
+    let ret = unsafe { libc::connect(sockfd, addr, addrlen) };
+    if ret == -1 {
+        let errno = unsafe { *libc::__errno_location() };
+        if errno != libc::EINPROGRESS {
+            return errno;
+        }
+    }
+
+    let millis: libc::c_uint = 5000;
+    let ret = unsafe {
+        libc::setsockopt(
+            sockfd,
+            libc::IPPROTO_TCP,
+            libc::TCP_USER_TIMEOUT,
+            &millis as *const libc::c_uint as *const libc::c_void,
+            std::mem::size_of::<libc::c_uint>() as libc::socklen_t,
+        )
+    };
+    if ret == -1 {
+        debug!("cannot set TCP_USER_TIMEOUT");
+    }
+
+    0
 }
 
 /// Kafka tests (only run when in integration test mode and kafka is running).

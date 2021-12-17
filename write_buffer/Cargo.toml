@@ -12,6 +12,7 @@ futures = "0.3"
 generated_types = { path = "../generated_types", features = ["data_types_conversions"] }
 http = "0.2"
 httparse = "1.5"
+libc = { version = "0.2" }
 metric = { path = "../metric" }
 mutable_batch_lp = { path = "../mutable_batch_lp" }
 mutable_batch_pb = { path = "../mutable_batch_pb" }
@@ -20,6 +21,7 @@ parking_lot = "0.11.2"
 pin-project = "1.0"
 prost = "0.8"
 rdkafka = { version = "0.28.0", optional = true }
+rdkafka-sys = { version = "4.2.0", optional = true }
 time = { path = "../time" }
 tokio = { version = "1.13", features = ["fs", "macros", "parking_lot", "rt", "sync", "time"] }
 tokio-util = "0.6.9"
@@ -29,7 +31,7 @@ uuid = { version = "0.8", features = ["v4"] }
 workspace-hack = { path = "../workspace-hack"}
 
 [features]
-kafka = ["rdkafka"]
+kafka = ["rdkafka", "rdkafka-sys"]
 
 [dev-dependencies]
 tempfile = "3.1.0"
