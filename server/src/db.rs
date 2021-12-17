@@ -53,9 +53,8 @@ use tracker::TaskTracker;
 use write_buffer::core::WriteBufferReading;
 
 use crate::JobRegistry;
-use crate::db::catalog::table::Table;
 use crate::db::catalog::metrics::CatalogMetrics;
-
+use crate::db::catalog::chunk::CatalogChunk;
  pub mod catalog;
 
 #[allow(clippy::large_enum_variant)]
@@ -96,11 +95,21 @@ struct ChunkAccess {
 
 #[derive(Debug)]
 pub struct Catalog {
-    db_name: Arc<str>,
-
-    /// key is table name
-    ///
-    /// TODO: Remove this unnecessary additional layer of locking
     tables: RwLock<HashMap<Arc<str>, Table>>,
+}
 
+#[derive(Debug)]
+pub struct Table {
+    /// key is partition key
+    partitions: Partition,
+}
+
+#[derive(Debug)]
+pub struct Partition {
+    chunks: ChunkCollection,
+}
+
+#[derive(Debug)]
+struct ChunkCollection {
+    a: CatalogChunk
 }
