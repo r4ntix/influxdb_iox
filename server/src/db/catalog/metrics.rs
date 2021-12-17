@@ -18,7 +18,7 @@ fn report_timestamp_metrics(table_name: &str) -> bool {
 }
 
 #[derive(Debug)]
-pub struct CatalogMetrics {
+pub(crate) struct CatalogMetrics {
     /// Name of the database
     db_name: Arc<str>,
 

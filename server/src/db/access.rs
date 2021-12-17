@@ -107,20 +107,9 @@ struct TableAccessMetrics {
 /// (and DataFusion) to access the contents of the IOx catalog.
 #[derive(Debug)]
 pub(crate) struct QueryCatalogAccess {
-    /// The catalog to have access to
-    catalog: Arc<Catalog>,
-
-    /// Handles finding / pruning chunks based on predicates
-    chunk_access: Arc<ChunkAccess>,
-
-    /// Stores queries which have been executed
-    query_log: Arc<QueryLog>,
-
-    /// Provides access to system tables
-    system_tables: Arc<SystemSchemaProvider>,
 
     /// Provides access to "normal" user tables
-    user_tables: Arc<DbSchemaProvider>,
+    user_tables: DbSchemaProvider,
 }
 
 // impl QueryCatalogAccess {
@@ -161,10 +150,8 @@ pub(crate) struct QueryCatalogAccess {
 #[derive(Debug)]
 struct ChunkAccess {
     /// The catalog to have access to
-    catalog: Arc<Catalog>,
+    catalog: Catalog,
 
-    /// Metrics about query processing
-    access_metrics: AccessMetrics,
 }
 
 // impl ChunkAccess {
@@ -274,11 +261,9 @@ struct ChunkAccess {
 /// Implement the DataFusion schema provider API
 #[derive(Debug)]
 struct DbSchemaProvider {
-    /// The catalog to have access to
-    catalog: Arc<Catalog>,
 
     /// Handles finding / pruning chunks based on predicates
-    chunk_access: Arc<ChunkAccess>,
+    chunk_access: ChunkAccess,
 }
 
 // impl DbSchemaProvider {

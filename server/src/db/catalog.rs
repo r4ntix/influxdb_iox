@@ -22,7 +22,7 @@ use data_types::write_summary::WriteSummary;
 use time::TimeProvider;
 
 pub mod chunk;
-mod metrics;
+pub mod metrics;
 pub mod partition;
 pub mod table;
 
@@ -58,27 +58,6 @@ impl<'a> From<Option<&'a BTreeSet<String>>> for TableNameFilter<'a> {
             None => Self::AllTables,
         }
     }
-}
-
-/// InfluxDB IOx Metadata Catalog
-///
-/// The Catalog stores information such as which chunks exist, what
-/// state they are in, and what objects on object store are used, etc.
-///
-/// The catalog is also responsible for (eventually) persisting this
-/// information
-#[derive(Debug)]
-pub struct Catalog {
-    db_name: Arc<str>,
-
-    /// key is table name
-    ///
-    /// TODO: Remove this unnecessary additional layer of locking
-    tables: RwLock<HashMap<Arc<str>, Table>>,
-
-    metrics: Arc<CatalogMetrics>,
-
-    time_provider: Arc<dyn TimeProvider>,
 }
 
 // impl Catalog {
