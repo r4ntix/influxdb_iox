@@ -1,15 +1,18 @@
 //! This module contains the interface to the Catalog / Chunks used by
 //! the query engine
 
-use crate::{db::system_tables, JobRegistry};
+// use crate::{db::system_tables, JobRegistry};
 use std::{any::Any, sync::Arc};
 
-use super::{
-    catalog::{Catalog, TableNameFilter},
-    chunk::DbChunk,
-    query_log::QueryLog,
-    Error, Result,
-};
+// use super::{
+//     catalog::{Catalog, TableNameFilter},
+//     chunk::DbChunk,
+//     query_log::QueryLog,
+//     Error, Result,
+// };
+
+use super::catalog::Catalog;
+use super::query_log::QueryLog;
 
 use async_trait::async_trait;
 use data_types::chunk_metadata::ChunkSummary;
@@ -25,7 +28,7 @@ use query::{
     QueryChunk, QueryChunkMeta, DEFAULT_SCHEMA,
 };
 use schema::Schema;
-use system_tables::{SystemSchemaProvider, SYSTEM_SCHEMA};
+use crate::db::system_tables::{SystemSchemaProvider, SYSTEM_SCHEMA};
 
 use hashbrown::HashMap;
 use parking_lot::{MappedMutexGuard, Mutex, MutexGuard};
@@ -35,8 +38,8 @@ use query::{
 };
 use time::TimeProvider;
 
-/// The number of entries to store in the circular query buffer log
-const QUERY_LOG_SIZE: usize = 100;
+// /// The number of entries to store in the circular query buffer log
+// const QUERY_LOG_SIZE: usize = 100;
 
 /// Metrics related to chunk access (pruning specifically)
 #[derive(Debug)]
@@ -51,45 +54,45 @@ struct AccessMetrics {
     tables: Mutex<HashMap<Arc<str>, TableAccessMetrics>>,
 }
 
-impl AccessMetrics {
-    fn new(registry: &metric::Registry, db_name: Arc<str>) -> Self {
-        let pruned_chunks = registry.register_metric(
-            "query_access_pruned_chunks",
-            "Number of chunks pruned using metadata",
-        );
+// impl AccessMetrics {
+//     fn new(registry: &metric::Registry, db_name: Arc<str>) -> Self {
+//         let pruned_chunks = registry.register_metric(
+//             "query_access_pruned_chunks",
+//             "Number of chunks pruned using metadata",
+//         );
 
-        let pruned_rows = registry.register_metric(
-            "query_access_pruned_rows",
-            "Number of rows pruned using metadata",
-        );
+//         let pruned_rows = registry.register_metric(
+//             "query_access_pruned_rows",
+//             "Number of rows pruned using metadata",
+//         );
 
-        Self {
-            db_name,
-            pruned_chunks,
-            pruned_rows,
-            tables: Default::default(),
-        }
-    }
+//         Self {
+//             db_name,
+//             pruned_chunks,
+//             pruned_rows,
+//             tables: Default::default(),
+//         }
+//     }
 
-    fn table_metrics(&self, table: &Arc<str>) -> MappedMutexGuard<'_, TableAccessMetrics> {
-        MutexGuard::map(self.tables.lock(), |tables| {
-            let (_, metrics) = tables.raw_entry_mut().from_key(table).or_insert_with(|| {
-                let attributes = Attributes::from([
-                    ("db_name", self.db_name.to_string().into()),
-                    ("table_name", table.to_string().into()),
-                ]);
+//     fn table_metrics(&self, table: &Arc<str>) -> MappedMutexGuard<'_, TableAccessMetrics> {
+//         MutexGuard::map(self.tables.lock(), |tables| {
+//             let (_, metrics) = tables.raw_entry_mut().from_key(table).or_insert_with(|| {
+//                 let attributes = Attributes::from([
+//                     ("db_name", self.db_name.to_string().into()),
+//                     ("table_name", table.to_string().into()),
+//                 ]);
 
-                let metrics = TableAccessMetrics {
-                    pruned_chunks: self.pruned_chunks.recorder(attributes.clone()),
-                    pruned_rows: self.pruned_rows.recorder(attributes),
-                };
+//                 let metrics = TableAccessMetrics {
+//                     pruned_chunks: self.pruned_chunks.recorder(attributes.clone()),
+//                     pruned_rows: self.pruned_rows.recorder(attributes),
+//                 };
 
-                (Arc::clone(table), metrics)
-            });
-            metrics
-        })
-    }
-}
+//                 (Arc::clone(table), metrics)
+//             });
+//             metrics
+//         })
+//     }
+// }
 
 /// Metrics related to chunk access for a specific table
 #[derive(Debug)]
@@ -120,38 +123,38 @@ pub(crate) struct QueryCatalogAccess {
     user_tables: Arc<DbSchemaProvider>,
 }
 
-impl QueryCatalogAccess {
-    pub fn new(
-        db_name: impl Into<String>,
-        catalog: Arc<Catalog>,
-        jobs: Arc<JobRegistry>,
-        time_provider: Arc<dyn TimeProvider>,
-        metric_registry: &metric::Registry,
-    ) -> Self {
-        let db_name = Arc::from(db_name.into());
-        let access_metrics = AccessMetrics::new(metric_registry, Arc::clone(&db_name));
-        let chunk_access = Arc::new(ChunkAccess::new(Arc::clone(&catalog), access_metrics));
-        let query_log = Arc::new(QueryLog::new(QUERY_LOG_SIZE, time_provider));
+// impl QueryCatalogAccess {
+//     pub fn new(
+//         db_name: impl Into<String>,
+//         catalog: Arc<Catalog>,
+//         jobs: Arc<JobRegistry>,
+//         time_provider: Arc<dyn TimeProvider>,
+//         metric_registry: &metric::Registry,
+//     ) -> Self {
+//         let db_name = Arc::from(db_name.into());
+//         let access_metrics = AccessMetrics::new(metric_registry, Arc::clone(&db_name));
+//         let chunk_access = Arc::new(ChunkAccess::new(Arc::clone(&catalog), access_metrics));
+//         let query_log = Arc::new(QueryLog::new(QUERY_LOG_SIZE, time_provider));
 
-        let system_tables = Arc::new(SystemSchemaProvider::new(
-            db_name.as_ref(),
-            Arc::clone(&catalog),
-            jobs,
-            Arc::clone(&query_log),
-        ));
-        let user_tables = Arc::new(DbSchemaProvider::new(
-            Arc::clone(&catalog),
-            Arc::clone(&chunk_access),
-        ));
-        Self {
-            catalog,
-            chunk_access,
-            query_log,
-            system_tables,
-            user_tables,
-        }
-    }
-}
+//         let system_tables = Arc::new(SystemSchemaProvider::new(
+//             db_name.as_ref(),
+//             Arc::clone(&catalog),
+//             jobs,
+//             Arc::clone(&query_log),
+//         ));
+//         let user_tables = Arc::new(DbSchemaProvider::new(
+//             Arc::clone(&catalog),
+//             Arc::clone(&chunk_access),
+//         ));
+//         Self {
+//             catalog,
+//             chunk_access,
+//             query_log,
+//             system_tables,
+//             user_tables,
+//         }
+//     }
+// }
 
 /// Encapsulates everything needed to find candidate chunks for
 /// queries (including pruning based on metadata)
@@ -164,109 +167,109 @@ struct ChunkAccess {
     access_metrics: AccessMetrics,
 }
 
-impl ChunkAccess {
-    fn new(catalog: Arc<Catalog>, access_metrics: AccessMetrics) -> Self {
-        Self {
-            catalog,
-            access_metrics,
-        }
-    }
+// impl ChunkAccess {
+//     fn new(catalog: Arc<Catalog>, access_metrics: AccessMetrics) -> Self {
+//         Self {
+//             catalog,
+//             access_metrics,
+//         }
+//     }
 
-    /// Returns all chunks that may have data that passes the
-    /// specified predicates. The chunks are pruned as aggressively as
-    /// possible based on metadata.
-    fn candidate_chunks(&self, predicate: &Predicate) -> Vec<Arc<DbChunk>> {
-        let partition_key = predicate.partition_key.as_deref();
-        let table_names: TableNameFilter<'_> = predicate.table_names.as_ref().into();
+//     /// Returns all chunks that may have data that passes the
+//     /// specified predicates. The chunks are pruned as aggressively as
+//     /// possible based on metadata.
+//     fn candidate_chunks(&self, predicate: &Predicate) -> Vec<Arc<DbChunk>> {
+//         let partition_key = predicate.partition_key.as_deref();
+//         let table_names: TableNameFilter<'_> = predicate.table_names.as_ref().into();
 
-        // Apply initial partition key / table name pruning
-        let chunks = self
-            .catalog
-            .filtered_chunks(table_names, partition_key, DbChunk::snapshot);
+//         // Apply initial partition key / table name pruning
+//         let chunks = self
+//             .catalog
+//             .filtered_chunks(table_names, partition_key, DbChunk::snapshot);
 
-        self.prune_chunks(chunks, predicate)
-    }
-}
+//         self.prune_chunks(chunks, predicate)
+//     }
+// }
 
-impl ChunkPruner<DbChunk> for ChunkAccess {
-    fn prune_chunks(&self, chunks: Vec<Arc<DbChunk>>, predicate: &Predicate) -> Vec<Arc<DbChunk>> {
-        // TODO: call "apply_predicate" here too for additional
-        // metadata based pruning
+// impl ChunkPruner<DbChunk> for ChunkAccess {
+//     fn prune_chunks(&self, chunks: Vec<Arc<DbChunk>>, predicate: &Predicate) -> Vec<Arc<DbChunk>> {
+//         // TODO: call "apply_predicate" here too for additional
+//         // metadata based pruning
 
-        debug!(num_chunks=chunks.len(), %predicate, "Attempting to prune chunks");
-        prune_chunks(self, chunks, predicate)
-    }
-}
+//         debug!(num_chunks=chunks.len(), %predicate, "Attempting to prune chunks");
+//         prune_chunks(self, chunks, predicate)
+//     }
+// }
 
-impl PruningObserver for ChunkAccess {
-    type Observed = DbChunk;
+// impl PruningObserver for ChunkAccess {
+//     type Observed = DbChunk;
 
-    fn was_pruned(&self, chunk: &Self::Observed) {
-        let metrics = self.access_metrics.table_metrics(chunk.table_name());
-        metrics.pruned_chunks.inc(1);
-        metrics.pruned_rows.inc(chunk.summary().total_count())
-    }
+//     fn was_pruned(&self, chunk: &Self::Observed) {
+//         let metrics = self.access_metrics.table_metrics(chunk.table_name());
+//         metrics.pruned_chunks.inc(1);
+//         metrics.pruned_rows.inc(chunk.summary().total_count())
+//     }
 
-    fn could_not_prune_chunk(&self, chunk: &Self::Observed, reason: &str) {
-        debug!(
-            chunk_id=%chunk.id().get(),
-            reason,
-            "could not prune chunk from query",
-        )
-    }
-}
+//     fn could_not_prune_chunk(&self, chunk: &Self::Observed, reason: &str) {
+//         debug!(
+//             chunk_id=%chunk.id().get(),
+//             reason,
+//             "could not prune chunk from query",
+//         )
+//     }
+// }
 
-#[async_trait]
-impl QueryDatabase for QueryCatalogAccess {
-    type Error = Error;
-    type Chunk = DbChunk;
+// #[async_trait]
+// impl QueryDatabase for QueryCatalogAccess {
+//     type Error = Error;
+//     type Chunk = DbChunk;
 
-    /// Return a covering set of chunks for a particular partition
-    fn chunks(&self, predicate: &Predicate) -> Vec<Arc<Self::Chunk>> {
-        self.chunk_access.candidate_chunks(predicate)
-    }
+//     /// Return a covering set of chunks for a particular partition
+//     fn chunks(&self, predicate: &Predicate) -> Vec<Arc<Self::Chunk>> {
+//         self.chunk_access.candidate_chunks(predicate)
+//     }
 
-    fn partition_keys(&self) -> Result<Vec<String>, Self::Error> {
-        Ok(self.catalog.partition_keys().into_iter().collect())
-    }
+//     fn partition_keys(&self) -> Result<Vec<String>, Self::Error> {
+//         Ok(self.catalog.partition_keys().into_iter().collect())
+//     }
 
-    fn chunk_summaries(&self) -> Result<Vec<ChunkSummary>> {
-        Ok(self.catalog.chunk_summaries())
-    }
+//     fn chunk_summaries(&self) -> Result<Vec<ChunkSummary>> {
+//         Ok(self.catalog.chunk_summaries())
+//     }
 
-    fn table_schema(&self, table_name: &str) -> Option<Arc<Schema>> {
-        self.catalog
-            .table(table_name)
-            .ok()
-            .map(|table| Arc::clone(&table.schema().read()))
-    }
+//     fn table_schema(&self, table_name: &str) -> Option<Arc<Schema>> {
+//         self.catalog
+//             .table(table_name)
+//             .ok()
+//             .map(|table| Arc::clone(&table.schema().read()))
+//     }
 
-    fn record_query(&self, query_type: impl Into<String>, query_text: impl Into<String>) {
-        self.query_log.push(query_type, query_text)
-    }
-}
+//     fn record_query(&self, query_type: impl Into<String>, query_text: impl Into<String>) {
+//         self.query_log.push(query_type, query_text)
+//     }
+// }
 
-// Datafusion catalog provider interface
-impl CatalogProvider for QueryCatalogAccess {
-    fn as_any(&self) -> &dyn Any {
-        self as &dyn Any
-    }
+// // Datafusion catalog provider interface
+// impl CatalogProvider for QueryCatalogAccess {
+//     fn as_any(&self) -> &dyn Any {
+//         self as &dyn Any
+//     }
 
-    fn schema_names(&self) -> Vec<String> {
-        vec![
-            DEFAULT_SCHEMA.to_string(),
-            system_tables::SYSTEM_SCHEMA.to_string(),
-        ]
-    }
+//     fn schema_names(&self) -> Vec<String> {
+//         vec![
+//             DEFAULT_SCHEMA.to_string(),
+//             system_tables::SYSTEM_SCHEMA.to_string(),
+//         ]
+//     }
 
-    fn schema(&self, name: &str) -> Option<Arc<dyn SchemaProvider>> {
-        match name {
-            DEFAULT_SCHEMA => Some(Arc::clone(&self.user_tables) as Arc<dyn SchemaProvider>),
-            SYSTEM_SCHEMA => Some(Arc::clone(&self.system_tables) as Arc<dyn SchemaProvider>),
-            _ => None,
-        }
-    }
-}
+//     fn schema(&self, name: &str) -> Option<Arc<dyn SchemaProvider>> {
+//         match name {
+//             DEFAULT_SCHEMA => Some(Arc::clone(&self.user_tables) as Arc<dyn SchemaProvider>),
+//             SYSTEM_SCHEMA => Some(Arc::clone(&self.system_tables) as Arc<dyn SchemaProvider>),
+//             _ => None,
+//         }
+//     }
+// }
 
 /// Implement the DataFusion schema provider API
 #[derive(Debug)]
@@ -278,49 +281,49 @@ struct DbSchemaProvider {
     chunk_access: Arc<ChunkAccess>,
 }
 
-impl DbSchemaProvider {
-    fn new(catalog: Arc<Catalog>, chunk_access: Arc<ChunkAccess>) -> Self {
-        Self {
-            catalog,
-            chunk_access,
-        }
-    }
-}
+// impl DbSchemaProvider {
+//     fn new(catalog: Arc<Catalog>, chunk_access: Arc<ChunkAccess>) -> Self {
+//         Self {
+//             catalog,
+//             chunk_access,
+//         }
+//     }
+// }
 
-impl SchemaProvider for DbSchemaProvider {
-    fn as_any(&self) -> &dyn Any {
-        self as &dyn Any
-    }
+// impl SchemaProvider for DbSchemaProvider {
+//     fn as_any(&self) -> &dyn Any {
+//         self as &dyn Any
+//     }
 
-    fn table_names(&self) -> Vec<String> {
-        self.catalog.table_names()
-    }
+//     fn table_names(&self) -> Vec<String> {
+//         self.catalog.table_names()
+//     }
 
-    /// Create a table provider for the named table
-    fn table(&self, table_name: &str) -> Option<Arc<dyn TableProvider>> {
-        let schema = {
-            let table = self.catalog.table(table_name).ok()?;
-            let schema = Arc::clone(&table.schema().read());
-            schema
-        };
+//     /// Create a table provider for the named table
+//     fn table(&self, table_name: &str) -> Option<Arc<dyn TableProvider>> {
+//         let schema = {
+//             let table = self.catalog.table(table_name).ok()?;
+//             let schema = Arc::clone(&table.schema().read());
+//             schema
+//         };
 
-        let mut builder = ProviderBuilder::new(table_name, schema);
-        builder =
-            builder.add_pruner(Arc::clone(&self.chunk_access) as Arc<dyn ChunkPruner<DbChunk>>);
+//         let mut builder = ProviderBuilder::new(table_name, schema);
+//         builder =
+//             builder.add_pruner(Arc::clone(&self.chunk_access) as Arc<dyn ChunkPruner<DbChunk>>);
 
-        let predicate = PredicateBuilder::new().table(table_name).build();
+//         let predicate = PredicateBuilder::new().table(table_name).build();
 
-        for chunk in self.chunk_access.candidate_chunks(&predicate) {
-            builder = builder.add_chunk(chunk);
-        }
+//         for chunk in self.chunk_access.candidate_chunks(&predicate) {
+//             builder = builder.add_chunk(chunk);
+//         }
 
-        match builder.build() {
-            Ok(provider) => Some(Arc::new(provider)),
-            Err(e) => panic!("unexpected error: {:?}", e),
-        }
-    }
+//         match builder.build() {
+//             Ok(provider) => Some(Arc::new(provider)),
+//             Err(e) => panic!("unexpected error: {:?}", e),
+//         }
+//     }
 
-    fn table_exist(&self, name: &str) -> bool {
-        self.catalog.table(name).is_ok()
-    }
-}
+//     fn table_exist(&self, name: &str) -> bool {
+//         self.catalog.table(name).is_ok()
+//     }
+// }
