@@ -53,63 +53,56 @@ use tracker::TaskTracker;
 use write_buffer::core::WriteBufferReading;
 
 use crate::JobRegistry;
-use crate::db::catalog::metrics::CatalogMetrics;
-use crate::db::catalog::chunk::CatalogChunk;
- pub mod catalog;
 
-#[allow(clippy::large_enum_variant)]
-#[derive(Debug, Snafu)]
-pub enum Error {
-}
-
-pub type Result<T, E = Error> = std::result::Result<T, E>;
-
-#[derive(Debug, Snafu)]
-pub enum DmlError {
-}
+use read_buffer::RBChunk;
 
 #[derive(Debug)]
 pub struct Db {
-    // 50 ms
-//    jobs: JobRegistry,
-
-    // 800 ms
-    catalog_access: QueryCatalogAccess,
+    catalog_access: Arc<QueryCatalogAccess>,
 }
 
 #[derive(Debug)]
-pub(crate) struct QueryCatalogAccess {
-    user_tables: DbSchemaProvider,
+struct QueryCatalogAccess {
+    user_tables: Arc<DbSchemaProvider>,
 }
 
 #[derive(Debug)]
 struct DbSchemaProvider {
-    chunk_access: ChunkAccess,
+    chunk_access: Arc<ChunkAccess>,
 }
 
 #[derive(Debug)]
 struct ChunkAccess {
-    catalog: Catalog,
-
+    catalog: Arc<Catalog>,
 }
 
 #[derive(Debug)]
-pub struct Catalog {
-    tables: RwLock<HashMap<Arc<str>, Table>>,
+struct Catalog {
+    tables: Arc<Table>,
 }
 
 #[derive(Debug)]
-pub struct Table {
+struct Table {
     /// key is partition key
-    partitions: Partition,
+    partitions: Arc<Partition>,
 }
 
 #[derive(Debug)]
-pub struct Partition {
-    chunks: ChunkCollection,
+struct Partition {
+    chunks: Arc<ChunkCollection>,
 }
 
 #[derive(Debug)]
 struct ChunkCollection {
-    a: CatalogChunk
+    chunk: Arc<CatalogChunk>,
+}
+
+#[derive(Debug)]
+struct CatalogChunk {
+    stage: Arc<ChunkStage>,
+}
+
+#[derive(Debug)]
+enum ChunkStage {
+    Persisted { read_buffer: Arc<RBChunk> },
 }

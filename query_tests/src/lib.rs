@@ -1,8 +1,49 @@
 use async_trait::async_trait;
-use server::Db;
+use read_buffer::RBChunk;
+use std::sync::Arc;
 
 struct DbScenario {
-    pub db: Db,
+    pub db: Arc<Db>,
+}
+
+struct Db {
+    catalog_access: Arc<QueryCatalogAccess>,
+}
+
+struct QueryCatalogAccess {
+    user_tables: Arc<DbSchemaProvider>,
+}
+
+struct DbSchemaProvider {
+    chunk_access: Arc<ChunkAccess>,
+}
+
+struct ChunkAccess {
+    catalog: Arc<Catalog>,
+}
+
+struct Catalog {
+    tables: Arc<Table>,
+}
+
+struct Table {
+    partitions: Arc<Partition>,
+}
+
+struct Partition {
+    chunks: Arc<ChunkCollection>,
+}
+
+struct ChunkCollection {
+    chunk: Arc<CatalogChunk>,
+}
+
+struct CatalogChunk {
+    stage: Arc<ChunkStage>,
+}
+
+struct ChunkStage {
+    read_buffer: Arc<RBChunk>,
 }
 
 #[async_trait]
