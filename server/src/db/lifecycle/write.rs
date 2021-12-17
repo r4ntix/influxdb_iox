@@ -163,8 +163,6 @@ pub(super) fn write_chunk_to_object_store(
             //
             // This ensures that any deletes encountered during or prior to the replay window
             // must have been made durable within the catalog for any persisted chunks
-            let delete_handle = db.delete_predicates_mailbox.consume().await;
-
             // IMPORTANT: Start transaction AFTER writing the actual parquet file so we do not hold
             //            the transaction lock (that is part of the PreservedCatalog) for too long.
             //            By using the cleanup lock (see above) it is ensured that the file that we
@@ -192,15 +190,11 @@ pub(super) fn write_chunk_to_object_store(
                 transaction.delete_predicate(&predicate, &[addr.clone().into()]);
             }
 
-            for (predicate, chunks) in delete_handle.outbox() {
-                transaction.delete_predicate(predicate, chunks);
-            }
 
             // preserved commit
             let ckpt_handle = transaction.commit().await.context(CommitError)?;
 
             // Deletes persisted correctly
-            delete_handle.flush();
 
             // in-mem commit
             {

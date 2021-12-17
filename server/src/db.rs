@@ -210,9 +210,6 @@ pub struct Db {
 
     name: Arc<str>,
 
-    #[allow(dead_code)]
-    server_id: ServerId, // this is also the Query Server ID
-
     /// Interface to use for persistence
     iox_object_store: Arc<IoxObjectStore>,
 
@@ -256,12 +253,6 @@ pub struct Db {
     cleanup_lock: Arc<tokio::sync::RwLock<()>>,
 
     time_provider: Arc<dyn TimeProvider>,
-
-    /// To-be-written delete predicates.
-    delete_predicates_mailbox: Mailbox<(Arc<DeletePredicate>, Vec<ChunkAddrWithoutDatabase>)>,
-
-    /// TESTING ONLY: Override of IDs for persisted chunks.
-    persisted_chunk_id_override: Mutex<Option<ChunkId>>,
 }
 
 /// All the information needed to commit a database
@@ -310,7 +301,6 @@ impl Db {
         Self {
             rules,
             name,
-            server_id,
             iox_object_store,
             exec,
             preserved_catalog: Arc::new(preserved_catalog),
@@ -322,8 +312,6 @@ impl Db {
             worker_iterations_delete_predicate_preservation: AtomicUsize::new(0),
             cleanup_lock: Default::default(),
             time_provider,
-            delete_predicates_mailbox: Default::default(),
-            persisted_chunk_id_override: Default::default(),
         }
     }
 
@@ -600,8 +588,6 @@ impl Db {
         }
 
         if !affected_persisted_chunks.is_empty() {
-            self.delete_predicates_mailbox
-                .push((delete_predicate, affected_persisted_chunks));
         }
 
         Ok(())
@@ -947,15 +933,7 @@ impl Db {
         // worker loop to persist delete predicates
         let delete_predicate_persistence_loop = async {
             loop {
-                let handle = self.delete_predicates_mailbox.consume().await;
-                match self.preserve_delete_predicates(handle.outbox()).await {
-                    Ok(()) => handle.flush(),
-                    Err(e) => error!(%e, db_name=%db_name, "cannot preserve delete predicates"),
-                }
-
-                self.worker_iterations_delete_predicate_preservation
-                    .fetch_add(1, Ordering::Relaxed);
-
+                todo!();
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         };

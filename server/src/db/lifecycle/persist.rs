@@ -190,7 +190,7 @@ pub fn persist_chunks(
                 schema,
                 delete_predicates,
                 min_order,
-                db.persisted_chunk_id_override.lock().as_ref().cloned(),
+                todo!(),
             );
             let to_persist = LockableCatalogChunk {
                 db,
