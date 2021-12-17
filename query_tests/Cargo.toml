@@ -9,21 +9,4 @@ description = "Tests of the query engine against different database configuratio
 
 [dependencies]
 async-trait = "0.1"
-data_types = { path = "../data_types" }
-datafusion = { path = "../datafusion" }
-once_cell = { version = "1.4.0", features = ["parking_lot"] }
-predicate = { path = "../predicate" }
-query = { path = "../query" }
 server = { path = "../server" }
-workspace-hack = { path = "../workspace-hack"}
-
-[dev-dependencies]
-arrow = { version = "6.0", features = ["prettyprint"] }
-arrow_util = { path = "../arrow_util" }
-metric = { path = "../metric" }
-object_store = { path = "../object_store" }
-schema = { path = "../schema" }
-snafu = "0.6.3"
-tempfile = "3.1.0"
-test_helpers = { path = "../test_helpers" }
-tokio = { version = "1.13", features = ["macros", "parking_lot", "rt-multi-thread", "time"] }

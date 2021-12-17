@@ -1,6 +1,14 @@
 use async_trait::async_trait;
 use server::Db;
-use std::sync::Arc;
+
+struct DbScenario {
+    pub db: Db,
+}
+
+#[async_trait]
+trait DbSetup: Send + Sync {
+    async fn make(&self) -> Vec<DbScenario>;
+}
 
 struct OneDeleteSimpleExprOneChunkDeleteAll;
 #[async_trait]
@@ -58,13 +66,4 @@ async fn alpha() -> Vec<DbScenario> {
 
 async fn beta() -> DbScenario {
     todo!()
-}
-
-struct DbScenario {
-    pub db: Arc<Db>,
-}
-
-#[async_trait]
-trait DbSetup: Send + Sync {
-    async fn make(&self) -> Vec<DbScenario>;
 }
