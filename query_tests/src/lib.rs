@@ -1,27 +1,70 @@
-//! This module contains "end to end" tests for the query layer.
-//!
-//! These tests consist of loading the same data in several
-//! "scenarios" (different distributions across the Mutable Buffer,
-//! Immutable Buffer, and (eventually) Parquet files, running queries
-//! against it and verifying the same answer is produced in all scenarios
+use async_trait::async_trait;
+use server::Db;
+use std::sync::Arc;
 
-// Actual tests
+struct OneDeleteSimpleExprOneChunkDeleteAll;
+#[async_trait]
+impl DbSetup for OneDeleteSimpleExprOneChunkDeleteAll {
+    async fn make(&self) -> Vec<DbScenario> {
+        alpha().await
+    }
+}
 
-#[cfg(test)]
-pub mod cancellation;
-#[cfg(test)]
-#[rustfmt::skip]
-mod cases;
-#[cfg(test)]
-pub mod influxrpc;
-#[cfg(test)]
-pub mod pruning;
-#[cfg(test)]
-mod runner;
-#[cfg(test)]
-pub mod sql;
-#[cfg(test)]
-pub mod table_schema;
+struct OneDeleteSimpleExprOneChunk;
+#[async_trait]
+impl DbSetup for OneDeleteSimpleExprOneChunk {
+    async fn make(&self) -> Vec<DbScenario> {
+        alpha().await
+    }
+}
 
-// Used by the `server_benchmark` crate in addition to tests in this crate
-pub mod scenarios;
+struct NoDeleteOneChunk;
+#[async_trait]
+impl DbSetup for NoDeleteOneChunk {
+    async fn make(&self) -> Vec<DbScenario> {
+        alpha().await
+    }
+}
+
+struct OneDeleteMultiExprsOneChunk;
+#[async_trait]
+impl DbSetup for OneDeleteMultiExprsOneChunk {
+    async fn make(&self) -> Vec<DbScenario> {
+        alpha().await
+    }
+}
+
+struct TwoDeletesMultiExprsOneChunk;
+#[async_trait]
+impl DbSetup for TwoDeletesMultiExprsOneChunk {
+    async fn make(&self) -> Vec<DbScenario> {
+        alpha().await
+    }
+}
+
+struct ThreeDeleteThreeChunks;
+#[async_trait]
+impl DbSetup for ThreeDeleteThreeChunks {
+    async fn make(&self) -> Vec<DbScenario> {
+        alpha().await
+    }
+}
+
+async fn alpha() -> Vec<DbScenario> {
+    let mut scenarios = vec![];
+    scenarios.push(beta().await);
+    scenarios
+}
+
+async fn beta() -> DbScenario {
+    todo!()
+}
+
+struct DbScenario {
+    pub db: Arc<Db>,
+}
+
+#[async_trait]
+trait DbSetup: Send + Sync {
+    async fn make(&self) -> Vec<DbScenario>;
+}
