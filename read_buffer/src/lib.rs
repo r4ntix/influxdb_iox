@@ -14,25 +14,25 @@ pub use chunk::{Chunk as RBChunk, ChunkMetrics, Error};
 pub use row_group::{BinaryExpr, Predicate};
 pub use table::ReadFilterResults;
 
-/// THIS MODULE SHOULD ONLY BE IMPORTED FOR BENCHMARKS.
-///
-/// This module lets us expose internal parts of the crate so that we can use
-/// libraries like criterion for benchmarking.
-///
-/// It should not be imported into any non-testing or benchmarking crates.
-pub mod benchmarks {
-    pub use crate::column::{
-        cmp::Operator,
-        encoding::scalar::transcoders::*,
-        encoding::scalar::{Fixed, FixedNull, ScalarEncoding},
-        encoding::string,
-        Column, RowIDs,
-    };
-    pub use crate::row_group::{ColumnType, RowGroup};
-    use crate::{ChunkMetrics, RBChunk};
+// /// THIS MODULE SHOULD ONLY BE IMPORTED FOR BENCHMARKS.
+// ///
+// /// This module lets us expose internal parts of the crate so that we can use
+// /// libraries like criterion for benchmarking.
+// ///
+// /// It should not be imported into any non-testing or benchmarking crates.
+// pub mod benchmarks {
+//     pub use crate::column::{
+//         cmp::Operator,
+//         encoding::scalar::transcoders::*,
+//         encoding::scalar::{Fixed, FixedNull, ScalarEncoding},
+//         encoding::string,
+//         Column, RowIDs,
+//     };
+//     pub use crate::row_group::{ColumnType, RowGroup};
+//     use crate::{ChunkMetrics, RBChunk};
 
-    // Allow external benchmarks to use this crate-only test method
-    pub fn new_from_row_group(table_name: impl Into<String>, row_group: RowGroup) -> RBChunk {
-        RBChunk::new_from_row_group(table_name, row_group, ChunkMetrics::new_unregistered())
-    }
-}
+//     // Allow external benchmarks to use this crate-only test method
+//     pub fn new_from_row_group(table_name: impl Into<String>, row_group: RowGroup) -> RBChunk {
+//         RBChunk::new_from_row_group(table_name, row_group, ChunkMetrics::new_unregistered())
+//     }
+// }

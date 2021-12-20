@@ -103,14 +103,6 @@ struct TableAccessMetrics {
     pruned_rows: U64Counter,
 }
 
-/// `QueryCatalogAccess` implements traits that allow the query engine
-/// (and DataFusion) to access the contents of the IOx catalog.
-#[derive(Debug)]
-pub(crate) struct QueryCatalogAccess {
-
-    /// Provides access to "normal" user tables
-    user_tables: DbSchemaProvider,
-}
 
 // impl QueryCatalogAccess {
 //     pub fn new(
@@ -145,14 +137,7 @@ pub(crate) struct QueryCatalogAccess {
 //     }
 // }
 
-/// Encapsulates everything needed to find candidate chunks for
-/// queries (including pruning based on metadata)
-#[derive(Debug)]
-struct ChunkAccess {
-    /// The catalog to have access to
-    catalog: Catalog,
 
-}
 
 // impl ChunkAccess {
 //     fn new(catalog: Arc<Catalog>, access_metrics: AccessMetrics) -> Self {
@@ -258,13 +243,7 @@ struct ChunkAccess {
 //     }
 // }
 
-/// Implement the DataFusion schema provider API
-#[derive(Debug)]
-struct DbSchemaProvider {
 
-    /// Handles finding / pruning chunks based on predicates
-    chunk_access: ChunkAccess,
-}
 
 // impl DbSchemaProvider {
 //     fn new(catalog: Arc<Catalog>, chunk_access: Arc<ChunkAccess>) -> Self {

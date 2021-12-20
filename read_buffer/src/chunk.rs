@@ -48,295 +48,295 @@ pub struct Chunk {
     pub(crate) table: Table,
 }
 
-impl Chunk {
-    /// Start a new Chunk from the given record batch.
-    pub fn new(
-        table_name: impl Into<String>,
-        table_data: RecordBatch,
-        mut metrics: ChunkMetrics,
-    ) -> Self {
-        let table_name = table_name.into();
-        let row_group = record_batch_to_row_group(&table_name, table_data);
-        let storage_statistics = row_group.column_storage_statistics();
+// impl Chunk {
+//     /// Start a new Chunk from the given record batch.
+//     pub fn new(
+//         table_name: impl Into<String>,
+//         table_data: RecordBatch,
+//         mut metrics: ChunkMetrics,
+//     ) -> Self {
+//         let table_name = table_name.into();
+//         let row_group = record_batch_to_row_group(&table_name, table_data);
+//         let storage_statistics = row_group.column_storage_statistics();
 
-        let table = Table::with_row_group(table_name, row_group);
+//         let table = Table::with_row_group(table_name, row_group);
 
-        metrics.update_column_storage_statistics(&storage_statistics);
+//         metrics.update_column_storage_statistics(&storage_statistics);
 
-        Self { metrics, table }
-    }
+//         Self { metrics, table }
+//     }
 
-    // Only used in tests and benchmarks
-    pub(crate) fn new_from_row_group(
-        table_name: impl Into<String>,
-        row_group: RowGroup,
-        metrics: ChunkMetrics,
-    ) -> Self {
-        Self {
-            metrics,
-            table: Table::with_row_group(table_name, row_group),
-        }
-    }
+//     // Only used in tests and benchmarks
+//     pub(crate) fn new_from_row_group(
+//         table_name: impl Into<String>,
+//         row_group: RowGroup,
+//         metrics: ChunkMetrics,
+//     ) -> Self {
+//         Self {
+//             metrics,
+//             table: Table::with_row_group(table_name, row_group),
+//         }
+//     }
 
-    // The total size taken up by an empty instance of `Chunk`.
-    fn base_size() -> usize {
-        std::mem::size_of::<Self>()
-    }
+//     // The total size taken up by an empty instance of `Chunk`.
+//     fn base_size() -> usize {
+//         std::mem::size_of::<Self>()
+//     }
 
-    /// The total estimated size in bytes of this `Chunk` and all contained
-    /// data.
-    pub fn size(&self) -> usize {
-        Self::base_size() + self.table.size()
-    }
+//     /// The total estimated size in bytes of this `Chunk` and all contained
+//     /// data.
+//     pub fn size(&self) -> usize {
+//         Self::base_size() + self.table.size()
+//     }
 
-    /// Return the estimated size for each column in the table.
-    /// Note there may be multiple entries for each column.
-    pub fn column_sizes(&self) -> Vec<ChunkColumnSummary> {
-        self.table.column_sizes()
-    }
+//     /// Return the estimated size for each column in the table.
+//     /// Note there may be multiple entries for each column.
+//     pub fn column_sizes(&self) -> Vec<ChunkColumnSummary> {
+//         self.table.column_sizes()
+//     }
 
-    /// The total estimated size in bytes of this `Chunk` and all contained
-    /// data if the data was not compressed but was stored contiguously in
-    /// vectors. `include_nulls` allows the caller to factor in NULL values or
-    /// to ignore them.
-    pub fn size_raw(&self, include_nulls: bool) -> usize {
-        self.table.size_raw(include_nulls)
-    }
+//     /// The total estimated size in bytes of this `Chunk` and all contained
+//     /// data if the data was not compressed but was stored contiguously in
+//     /// vectors. `include_nulls` allows the caller to factor in NULL values or
+//     /// to ignore them.
+//     pub fn size_raw(&self, include_nulls: bool) -> usize {
+//         self.table.size_raw(include_nulls)
+//     }
 
-    /// The total number of rows in all row groups in all tables in this chunk.
-    pub fn rows(&self) -> u64 {
-        self.table.rows()
-    }
+//     /// The total number of rows in all row groups in all tables in this chunk.
+//     pub fn rows(&self) -> u64 {
+//         self.table.rows()
+//     }
 
-    /// The total number of row groups in all tables in this chunk.
-    pub fn row_groups(&self) -> usize {
-        self.table.row_groups()
-    }
+//     /// The total number of row groups in all tables in this chunk.
+//     pub fn row_groups(&self) -> usize {
+//         self.table.row_groups()
+//     }
 
-    /// Add a row_group to a table in the chunk, updating all Chunk meta data.
-    pub(crate) fn upsert_table_with_row_group(&mut self, row_group: RowGroup) {
-        // track new row group statistics to update column-based metrics.
-        let storage_statistics = row_group.column_storage_statistics();
+//     /// Add a row_group to a table in the chunk, updating all Chunk meta data.
+//     pub(crate) fn upsert_table_with_row_group(&mut self, row_group: RowGroup) {
+//         // track new row group statistics to update column-based metrics.
+//         let storage_statistics = row_group.column_storage_statistics();
 
-        self.table.add_row_group(row_group);
+//         self.table.add_row_group(row_group);
 
-        // update column metrics associated with column storage
-        self.metrics
-            .update_column_storage_statistics(&storage_statistics);
-    }
+//         // update column metrics associated with column storage
+//         self.metrics
+//             .update_column_storage_statistics(&storage_statistics);
+//     }
 
-    /// Add a record batch of data to to a `Table` in the chunk.
-    ///
-    /// The data is converted to a `RowGroup` outside of any locking so the
-    /// caller does not need to be concerned about the size of the update.
-    pub fn upsert_table(&mut self, table_data: RecordBatch) {
-        let table_name = self.table.name();
+//     /// Add a record batch of data to to a `Table` in the chunk.
+//     ///
+//     /// The data is converted to a `RowGroup` outside of any locking so the
+//     /// caller does not need to be concerned about the size of the update.
+//     pub fn upsert_table(&mut self, table_data: RecordBatch) {
+//         let table_name = self.table.name();
 
-        let row_group = record_batch_to_row_group(table_name, table_data);
+//         let row_group = record_batch_to_row_group(table_name, table_data);
 
-        self.upsert_table_with_row_group(row_group)
-    }
+//         self.upsert_table_with_row_group(row_group)
+//     }
 
-    //
-    // Methods for executing queries.
-    //
+//     //
+//     // Methods for executing queries.
+//     //
 
-    /// Given a projection of column names, `read_filter` returns all rows that
-    /// satisfy the provided predicate, subject to those rows also not
-    /// satisfying any of the provided negation predicates.
-    ///
-    /// Effectively `read_filter` provides projection push-down, predicate
-    /// push-down and the ability to express delete operations based on
-    /// predicates that are then used to remove rows from the result set.
-    ///
-    /// Where possible all this work happens on compressed representations, such
-    /// that the minimum amount of data is materialised.
-    ///
-    /// `read_filter` returns an iterator of Record Batches, where each Record
-    /// Batch contains all matching rows for a _row group_ within the chunk.
-    /// Each Record Batch is processed and materialised lazily.
-    ///
-    /// Expressing deletes with `read_filter`.
-    ///
-    /// An expectation of this API is that each distinct delete operation can be
-    /// expressed as a predicate consisting of conjunctive expressions comparing
-    /// a column to a literal value. For example you might express two delete
-    /// operations like this:
-    ///
-    ///  DELETE FROM t WHERE "region" = 'west';
-    ///  DELETE FROM t WHERE "region" = 'north' AND "env" = 'prod';
-    ///
-    /// In this case `read_filter` should _remove_ from _any_ result set rows
-    /// that either:
-    ///
-    ///  (1) contain a value 'west' in the "region" column; OR
-    ///  (2) contain a value 'east' in the "region column and also 'prod' in
-    ///      the "env" column.
-    ///
-    /// It is important that separate delete operations are expressed as
-    /// separate `Predicate` objects in the `negated_predicates` argument. This
-    /// ensures that the matching rows are appropriately unioned. This final
-    /// unioned set of rows is then removed from any rows matching the
-    /// `predicate` argument.
-    ///
-    pub fn read_filter(
-        &self,
-        predicate: Predicate,
-        select_columns: Selection<'_>,
-        negated_predicates: Vec<Predicate>,
-    ) -> Result<table::ReadFilterResults> {
-        debug!(%predicate, ?select_columns, ?negated_predicates, "read_filter called");
-        let now = std::time::Instant::now();
-        let result = self
-            .table
-            .read_filter(&select_columns, &predicate, negated_predicates.as_slice())
-            .context(TableError);
+//     /// Given a projection of column names, `read_filter` returns all rows that
+//     /// satisfy the provided predicate, subject to those rows also not
+//     /// satisfying any of the provided negation predicates.
+//     ///
+//     /// Effectively `read_filter` provides projection push-down, predicate
+//     /// push-down and the ability to express delete operations based on
+//     /// predicates that are then used to remove rows from the result set.
+//     ///
+//     /// Where possible all this work happens on compressed representations, such
+//     /// that the minimum amount of data is materialised.
+//     ///
+//     /// `read_filter` returns an iterator of Record Batches, where each Record
+//     /// Batch contains all matching rows for a _row group_ within the chunk.
+//     /// Each Record Batch is processed and materialised lazily.
+//     ///
+//     /// Expressing deletes with `read_filter`.
+//     ///
+//     /// An expectation of this API is that each distinct delete operation can be
+//     /// expressed as a predicate consisting of conjunctive expressions comparing
+//     /// a column to a literal value. For example you might express two delete
+//     /// operations like this:
+//     ///
+//     ///  DELETE FROM t WHERE "region" = 'west';
+//     ///  DELETE FROM t WHERE "region" = 'north' AND "env" = 'prod';
+//     ///
+//     /// In this case `read_filter` should _remove_ from _any_ result set rows
+//     /// that either:
+//     ///
+//     ///  (1) contain a value 'west' in the "region" column; OR
+//     ///  (2) contain a value 'east' in the "region column and also 'prod' in
+//     ///      the "env" column.
+//     ///
+//     /// It is important that separate delete operations are expressed as
+//     /// separate `Predicate` objects in the `negated_predicates` argument. This
+//     /// ensures that the matching rows are appropriately unioned. This final
+//     /// unioned set of rows is then removed from any rows matching the
+//     /// `predicate` argument.
+//     ///
+//     pub fn read_filter(
+//         &self,
+//         predicate: Predicate,
+//         select_columns: Selection<'_>,
+//         negated_predicates: Vec<Predicate>,
+//     ) -> Result<table::ReadFilterResults> {
+//         debug!(%predicate, ?select_columns, ?negated_predicates, "read_filter called");
+//         let now = std::time::Instant::now();
+//         let result = self
+//             .table
+//             .read_filter(&select_columns, &predicate, negated_predicates.as_slice())
+//             .context(TableError);
 
-        let row_groups = result
-            .as_ref()
-            .map(|result| result.row_groups())
-            .unwrap_or(0);
-        debug!(elapsed=?now.elapsed(), succeeded=result.is_ok(), ?row_groups, "read_filter completed");
-        result
-    }
+//         let row_groups = result
+//             .as_ref()
+//             .map(|result| result.row_groups())
+//             .unwrap_or(0);
+//         debug!(elapsed=?now.elapsed(), succeeded=result.is_ok(), ?row_groups, "read_filter completed");
+//         result
+//     }
 
-    /// Returns an iterable collection of data in group columns and aggregate
-    /// columns, optionally filtered by the provided predicate. Results are
-    /// merged across all row groups.
-    ///
-    /// Note: `read_aggregate` currently only supports grouping on "tag"
-    /// columns.
-    pub(crate) fn read_aggregate(
-        &self,
-        predicate: Predicate,
-        group_columns: &Selection<'_>,
-        aggregates: &[(ColumnName<'_>, AggregateType)],
-    ) -> Result<table::ReadAggregateResults> {
-        self.table
-            .read_aggregate(predicate, group_columns, aggregates)
-            .context(TableError)
-    }
+//     /// Returns an iterable collection of data in group columns and aggregate
+//     /// columns, optionally filtered by the provided predicate. Results are
+//     /// merged across all row groups.
+//     ///
+//     /// Note: `read_aggregate` currently only supports grouping on "tag"
+//     /// columns.
+//     pub(crate) fn read_aggregate(
+//         &self,
+//         predicate: Predicate,
+//         group_columns: &Selection<'_>,
+//         aggregates: &[(ColumnName<'_>, AggregateType)],
+//     ) -> Result<table::ReadAggregateResults> {
+//         self.table
+//             .read_aggregate(predicate, group_columns, aggregates)
+//             .context(TableError)
+//     }
 
-    //
-    // ---- Schema queries
-    //
+//     //
+//     // ---- Schema queries
+//     //
 
-    /// Validates if the predicate can be applied to the table based on the
-    /// schema and the predicate's expressions. Returns an error if the
-    /// predicate cannot be applied.
-    pub fn validate_predicate(&self, predicate: Predicate) -> Result<Predicate, Error> {
-        self.table.validate_predicate(predicate).context(TableError)
-    }
+//     /// Validates if the predicate can be applied to the table based on the
+//     /// schema and the predicate's expressions. Returns an error if the
+//     /// predicate cannot be applied.
+//     pub fn validate_predicate(&self, predicate: Predicate) -> Result<Predicate, Error> {
+//         self.table.validate_predicate(predicate).context(TableError)
+//     }
 
-    /// Determines if one of more rows in the provided table could possibly
-    /// match the provided predicate.
-    ///
-    /// If the provided table does not exist then `could_pass_predicate` returns
-    /// `false`. If the predicate is incompatible with chunk's schema
-    /// `could_pass_predicate` returns false.
-    pub fn could_pass_predicate(&self, predicate: Predicate) -> bool {
-        self.table.could_pass_predicate(&predicate)
-    }
+//     /// Determines if one of more rows in the provided table could possibly
+//     /// match the provided predicate.
+//     ///
+//     /// If the provided table does not exist then `could_pass_predicate` returns
+//     /// `false`. If the predicate is incompatible with chunk's schema
+//     /// `could_pass_predicate` returns false.
+//     pub fn could_pass_predicate(&self, predicate: Predicate) -> bool {
+//         self.table.could_pass_predicate(&predicate)
+//     }
 
-    /// Return table summaries or all tables in this chunk.
-    /// Each table will be represented exactly once.
-    ///
-    /// TODO(edd): consider deprecating or changing to return information about
-    /// the physical layout of the data in the chunk.
-    pub fn table_summary(&self) -> TableSummary {
-        self.table.table_summary()
-    }
+//     /// Return table summaries or all tables in this chunk.
+//     /// Each table will be represented exactly once.
+//     ///
+//     /// TODO(edd): consider deprecating or changing to return information about
+//     /// the physical layout of the data in the chunk.
+//     pub fn table_summary(&self) -> TableSummary {
+//         self.table.table_summary()
+//     }
 
-    /// Returns a schema object for a `read_filter` operation using the provided
-    /// column selection. An error is returned if the specified columns do not
-    /// exist.
-    pub fn read_filter_table_schema(&self, columns: Selection<'_>) -> Result<Schema> {
-        // Validate columns exist in table.
-        let table_meta = self.table.meta();
-        if let Selection::Some(cols) = columns {
-            for column_name in cols {
-                if !table_meta.has_column(column_name) {
-                    return ColumnDoesNotExist {
-                        column_name: column_name.to_string(),
-                        table_name: self.table.name().to_string(),
-                    }
-                    .fail();
-                }
-            }
-        }
+//     /// Returns a schema object for a `read_filter` operation using the provided
+//     /// column selection. An error is returned if the specified columns do not
+//     /// exist.
+//     pub fn read_filter_table_schema(&self, columns: Selection<'_>) -> Result<Schema> {
+//         // Validate columns exist in table.
+//         let table_meta = self.table.meta();
+//         if let Selection::Some(cols) = columns {
+//             for column_name in cols {
+//                 if !table_meta.has_column(column_name) {
+//                     return ColumnDoesNotExist {
+//                         column_name: column_name.to_string(),
+//                         table_name: self.table.name().to_string(),
+//                     }
+//                     .fail();
+//                 }
+//             }
+//         }
 
-        // Build a table schema
-        Schema::try_from(&ResultSchema {
-            select_columns: match columns {
-                Selection::All => table_meta.schema_for_all_columns(),
-                Selection::Some(column_names) => table_meta.schema_for_column_names(column_names),
-            },
-            ..ResultSchema::default()
-        })
-        .context(TableSchemaError)
-    }
+//         // Build a table schema
+//         Schema::try_from(&ResultSchema {
+//             select_columns: match columns {
+//                 Selection::All => table_meta.schema_for_all_columns(),
+//                 Selection::Some(column_names) => table_meta.schema_for_column_names(column_names),
+//             },
+//             ..ResultSchema::default()
+//         })
+//         .context(TableSchemaError)
+//     }
 
-    /// Determines if at least one row in the Chunk satisfies the provided
-    /// predicate. `satisfies_predicate` will return true if it is guaranteed
-    /// that at least one row in the Chunk will satisfy the predicate.
-    pub fn satisfies_predicate(&self, predicate: &Predicate) -> bool {
-        self.table.satisfies_predicate(predicate)
-    }
+//     /// Determines if at least one row in the Chunk satisfies the provided
+//     /// predicate. `satisfies_predicate` will return true if it is guaranteed
+//     /// that at least one row in the Chunk will satisfy the predicate.
+//     pub fn satisfies_predicate(&self, predicate: &Predicate) -> bool {
+//         self.table.satisfies_predicate(predicate)
+//     }
 
-    /// Returns the distinct set of column names that contain data matching the
-    /// provided predicate, which may be empty.
-    ///
-    /// Results can be further limited to a specific selection of columns.
-    ///
-    /// `dst` is a buffer that will be populated with results. `column_names` is
-    /// smart enough to short-circuit processing on row groups when it
-    /// determines that all the columns in the row group are already contained
-    /// in the results buffer. Callers can skip this behaviour by passing in
-    /// an empty `BTreeSet`.
-    pub fn column_names(
-        &self,
-        predicate: Predicate,
-        negated_predicates: Vec<Predicate>,
-        only_columns: Selection<'_>,
-        dst: BTreeSet<String>,
-    ) -> Result<BTreeSet<String>> {
-        self.table
-            .column_names(&predicate, &negated_predicates, only_columns, dst)
-            .context(TableError)
-    }
+//     /// Returns the distinct set of column names that contain data matching the
+//     /// provided predicate, which may be empty.
+//     ///
+//     /// Results can be further limited to a specific selection of columns.
+//     ///
+//     /// `dst` is a buffer that will be populated with results. `column_names` is
+//     /// smart enough to short-circuit processing on row groups when it
+//     /// determines that all the columns in the row group are already contained
+//     /// in the results buffer. Callers can skip this behaviour by passing in
+//     /// an empty `BTreeSet`.
+//     pub fn column_names(
+//         &self,
+//         predicate: Predicate,
+//         negated_predicates: Vec<Predicate>,
+//         only_columns: Selection<'_>,
+//         dst: BTreeSet<String>,
+//     ) -> Result<BTreeSet<String>> {
+//         self.table
+//             .column_names(&predicate, &negated_predicates, only_columns, dst)
+//             .context(TableError)
+//     }
 
-    /// Returns the distinct set of column values for each provided column,
-    /// where each returned value lives in a row matching the provided
-    /// predicate.
-    ///
-    /// If the predicate is empty then all distinct values are returned for the
-    /// chunk.
-    ///
-    /// `dst` is intended to allow for some more sophisticated execution,
-    /// wherein execution can be short-circuited for distinct values that have
-    /// already been found. Callers can simply provide an empty `BTreeMap` to
-    /// skip this behaviour.
-    pub fn column_values(
-        &self,
-        predicate: Predicate,
-        columns: Selection<'_>,
-        dst: BTreeMap<String, BTreeSet<String>>,
-    ) -> Result<BTreeMap<String, BTreeSet<String>>> {
-        let columns = match columns {
-            Selection::All => {
-                return UnsupportedOperation {
-                    msg: "column_values does not support All columns".to_owned(),
-                }
-                .fail();
-            }
-            Selection::Some(columns) => columns,
-        };
+//     /// Returns the distinct set of column values for each provided column,
+//     /// where each returned value lives in a row matching the provided
+//     /// predicate.
+//     ///
+//     /// If the predicate is empty then all distinct values are returned for the
+//     /// chunk.
+//     ///
+//     /// `dst` is intended to allow for some more sophisticated execution,
+//     /// wherein execution can be short-circuited for distinct values that have
+//     /// already been found. Callers can simply provide an empty `BTreeMap` to
+//     /// skip this behaviour.
+//     pub fn column_values(
+//         &self,
+//         predicate: Predicate,
+//         columns: Selection<'_>,
+//         dst: BTreeMap<String, BTreeSet<String>>,
+//     ) -> Result<BTreeMap<String, BTreeSet<String>>> {
+//         let columns = match columns {
+//             Selection::All => {
+//                 return UnsupportedOperation {
+//                     msg: "column_values does not support All columns".to_owned(),
+//                 }
+//                 .fail();
+//             }
+//             Selection::Some(columns) => columns,
+//         };
 
-        self.table
-            .column_values(&predicate, columns, dst)
-            .context(TableError)
-    }
-}
+//         self.table
+//             .column_values(&predicate, columns, dst)
+//             .context(TableError)
+//     }
+// }
 
 fn record_batch_to_row_group(table_name: &str, rb: RecordBatch) -> RowGroup {
     let now = std::time::Instant::now();
@@ -346,11 +346,11 @@ fn record_batch_to_row_group(table_name: &str, rb: RecordBatch) -> RowGroup {
     row_group
 }
 
-impl std::fmt::Debug for Chunk {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "Chunk: rows: {:?}", self.rows())
-    }
-}
+// impl std::fmt::Debug for Chunk {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         writeln!(f, "Chunk: rows: {:?}", self.rows())
+//     }
+// }
 
 /// The collection of metrics exposed by the Read Buffer. Note: several of these
 /// be better represented as distributions, but the histogram story in IOx is not
