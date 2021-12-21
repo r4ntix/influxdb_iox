@@ -165,7 +165,7 @@ Figure 3 illustrates an example of IOx Data LifeCycle with 8 actions happening a
                                                                                                                                 ──────────────────▶│O-MUB 8│                               
                                                                                                                                      after T7      └───────┘                               
                                                                                                                                                                                            
-Figure 3: Example of                                                                                                                                                                                                   
+Figure 3: Example of Chunk Data LifeCycle                                                                                                                                                                                                   
 ```
 
 Now we understand chunks and their life cycle, let us move to next topic: [IOx Catalog: The Metadata for Operating a Database](catalogs.md)
