@@ -310,6 +310,7 @@ impl Catalog {
             }
             None => itertools::Either::Right(table.partitions()),
         });
+        // todo: table lock should be released here
 
         let mut chunks = Vec::with_capacity(partitions.size_hint().1.unwrap_or_default());
         for partition in partitions {
