@@ -114,33 +114,34 @@ A write in IOx is implemented in [store_filtered_write](https://github.com/influ
 ### Example 3: Compact Object Store Chunks of Partition, P1
 As defined in [Data Organization and LifeCycle](data_organization_lifecycle.md), Compact Object Store Chunks implemented in [compact_object_store_chunk](https://github.com/influxdata/influxdb_iox/blob/56c7e3cd607e4f42c70c06609a427d6196d1d9de/server/src/db/lifecycle/compact_object_store.rs#L63) is an action to compact eligible Object Store Chunks into one Object Store Chunk. This includes the following major steps[^ossteps], each may acquire and release locks.
 1. Step 1: Identify Catalog OS Chunks to compact and take their snapshots. This is similar to the first step of `querying a table` described above and will  <span style="color:red">acquire</span> and <span style="color:green">release</span> `S` locks on appropriate Table, Partition, and Chunks.
-1. Step 2: Compact the snapshots. This is similar to the third step of `querying a partition` that build a query plan for the snapshots and execute the plan. This step does not take any locks
-1. Step 3: Persist the compacted data into a new OS Data Chunk. This requires new a type of lock as well as a transaction and will be described in detail below.
+1. Step 2: Compact the snapshots. This is similar to the third step of `querying a partition` that build a query plan for the snapshots and execute the plan. This step does not take any locks.
+1. Step 3: Persist the compacted data into a new OS Data Chunk. This requires a new type of lock as well as a transaction and will be described in detail below.
 1. Step 4: Update the Catalog to use the newly created OS Data Chunk and remove the compacted Catalog Chunks.
 
 
 **Step 3: Persist the compacted data into a new OS Data Chunk**
 
-As described in [Catalog](catalogs.md), all OS Data Chunks are durable and should be able to recover in case of disaster. To do so, the information of Catalog Objects of these OS Data Chunks should also be persisted as `Catalog Transactions`. Note that `Catalog Transaction` is different from `Database Transaction` (or simply a `transaction`) mentioned in this document so far. `Catalog Transaction` only records something that has happened and does not trigger those actions. Since the job of Compact OS Chunks is to replace a few OS Data Chunks with a new OS Data Chunk, `Catalog Transactions` of the Catalog Objects of the new Data Chunk are also needed to get saved in the object store. Thus, this step includes two main sub-steps: (i) write the compacted data to a parquet file in the Object Store, and (ii) write the `Catalog Transactions` of the chunk created in sub-step i in the object store in a transaction. Since we do not want the parquet file created in sub-step i to get cleaned up by a background job because it does not have any Catalog Object refers to, we need to lock the `cleanup` lock during this step.  The whole process of this step can be split into many sub-steps as follows:
+As described in [Catalog](catalogs.md), all OS Data Chunks are durable and should be able to recover in case of disaster. To do so, the information of Catalog Objects of these OS Data Chunks should also be persisted as `Catalog Transactions`. Note that `Catalog Transaction` is different from `Database Transaction` (or simply a `transaction`) mentioned in this document so far. `Catalog Transaction` only records something that has happened and does not trigger those actions. Since the job of Compact OS Chunks is to replace a few OS Data Chunks with a new OS Data Chunk, `Catalog Transactions` of the Catalog Objects of the new Data Chunk are also needed to get saved in the object store. Thus, this step includes two main sub-steps: (i) write the compacted data to a parquet file in the Object Store, and (ii) write the `Catalog Transactions` of the chunk created in sub-step i in the object store in a transaction. Since we do not want the parquet file created in sub-step i to get cleaned up by a background job because it does not have any Catalog Object referring to, we need to lock the `cleanup` lock during this step.  The whole process of this step can be split into many sub-steps as follows:
 
 1. Step a: <span style="color:red">Acquire</span> `S` lock on **cleanup lock** to ensure no cleanup jobs can remove any parquet files.
-1. Step b: Write compacted data to a parquet file, `PF`, in the object store.
+1. Step b: Write the compacted data to a parquet file, `PF`, in the object store.
 1. Step c: <span style="color:red">Open</span>  a Catalog Transaction, `CT`
-1. Step d: Tell `CT` to remove parquet files of compacted chunks. These are file paths of the OS chunks identified in Step 1 above. Note that the `CT` will not remove anything but just records that those files have been `soft` deleted and should not be used in the future. Those files can still be accessed by some queries, and at this moment the Catalog still use them. See the detailed of Step 4 for when these files are no longer used and can be hard deleted by a background cleanup job.
-1. Step e: Tell `CT` to add the newly created  parquet file, `PF`[^tran].
+1. Step d: Tell `CT` to remove parquet files of the compacted chunks. These are file paths of the OS chunks identified in Step 1 above. Note that the `CT` will not remove anything but just records that those files have been `soft` deleted and should not be used in the future. Those files can still be accessed by some queries, and at this moment the Catalog still use them. See the detail of Step 4 for when these files are no longer used and can be hard deleted by a background cleanup job.
+1. Step e: Tell `CT` to add the newly created  parquet file, `PF`.
 1. Step f: <span style="color:green">Commit</span>  `CT`
 1. Step g: <span style="color:green">Release</span> `S` on the **cleanup lock**.
 
-By open and commit a `Catalog Transaction`, IOx guarantees the old parquet files are only removed from the catalog if its newly compacted file is added.
+By open (step c) and commit (step f) a `Catalog Transaction`, IOx guarantees the old parquet files are only removed from the catalog if its newly compacted file is added.
 
 **Step 4: Update the Catalog to use the newly created OS Data Chunk and remove the compacted Catalog Chunks**
-After step 3, the newly compacted Data Chunk is fully stored in the Object Store with corresponding `Catalog Transactions` to rebuild the Catalog as needed. However, the current Catalog still contains old Catalog Objects that link to the old OS Data Chunks. This step is to update the Catalog to remove the old Catalog Objects and add the new ones to link to the new OS Data Chunk created in step 3 and as follows:
+
+After step 3, the newly compacted Data Chunk is fully stored in the Object Store with its corresponding `Catalog Transactions` to rebuild the Catalog as needed. However, the current Catalog still contains old Catalog Objects that link to the old OS Data Chunks. This step is to update the Catalog to remove the old Catalog Objects and add the new ones to link to the new OS Data Chunk created in step 3 and as follows:
 1. Step i: <span style="color:red">Acquire</span> `X` lock on the provided partition produced in Step 1.
-1. Step ii: Drop compacted Catalog Chunks from the partition. These chunks are also provided from Step 1. 
+1. Step ii: Drop the compacted Catalog Chunks from the partition. These chunks are also produced in Step 1. 
 1. Step iii: Create a new Catalog Chunk that links to the OS Data Chunk created in Step 3.
-1. Step iv: <span style="color:green">Release</span> X` lock on the Partition.
+1. Step iv: <span style="color:green">Release</span> `X` lock on the Partition.
 
 
-[^ossteps]: The Compact Object Store also removes delete tombstones that require further locking. Delete is a large topic and deserves its own document.
+[^ossteps]: The Compact Object Store also removes delete tombstones that require further locking. However, since Delete is a large topic and deserves its own document, the locking for deletes will be included in that document instead.
 
 
