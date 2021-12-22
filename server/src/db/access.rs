@@ -184,6 +184,7 @@ impl ChunkAccess {
             .catalog
             .filtered_chunks(table_names, partition_key, DbChunk::snapshot);
 
+        // todo: ask alamb how fast/slow the snapshot is and whether the pruning step will be optimized if done inside filtered_chunks
         self.prune_chunks(chunks, predicate)
     }
 }
