@@ -75,7 +75,7 @@ Table 2: IOx Locks and Their Compatibility
 ## Examples of Locks and Transactions
 Let us go over a few common actions in IOx Data Lifecycle to explore when locks and transactions are used.
 
-### Query Data of a Table, T1
+### Example 1: Query Data of a Table, T1
 In order to query a table, we need through these steps:
 1. Step 1: Identifying Data Chunks of the table and take their snapshots.
 1. Step 2: Pruning unnecessary Chunks
@@ -96,7 +96,7 @@ Since querying only involves reading activities, no transactions are needed. As 
 
 [^tables]: The filtered_chunks function can return chunks of many tables but we only need chunks of one table in this example.
 
-### Write to an O-MUB Chunk of Partition, P1, of Table, T1
+### Example 2: Write to an O-MUB Chunk of Partition, P1, of Table, T1
 A write in IOx is implemented in [store_filtered_write](https://github.com/influxdata/influxdb_iox/blob/ccba68fe3ed3b41f06992cd1c11eefe720ed3ad4/server/src/db.rs#L1053) that can trigger to create a table or partitions as needed but in this example, we only focus on writing data to an available `O-MUB` chunk of Partition, `P1`, of Table, `T1`. Similar to reading, the lock acquisition and release are in the same order but on `X` lock instead.
 1. <span style="color:red">Acquire</span> `X` lock on all tables.
 1. Identify Catalog Table `T1`
@@ -111,7 +111,7 @@ A write in IOx is implemented in [store_filtered_write](https://github.com/influ
 1. <span style="color:green">Release</span> `X` lock on `P1`
 1. <span style="color:green">Release</span> `X` lock on `T1`
 
-### Compact Object Store Chunks of Partition, P1
+### Example 3: Compact Object Store Chunks of Partition, P1
 As defined in [Data Organization and LifeCycle](data_organization_lifecycle.md), Compact Object Store Chunks implemented in [compact_object_store_chunk](https://github.com/influxdata/influxdb_iox/blob/56c7e3cd607e4f42c70c06609a427d6196d1d9de/server/src/db/lifecycle/compact_object_store.rs#L63) is an action to compact eligible Object Store Chunks into one Object Store Chunk. This includes the following major steps[^ossteps], each may acquire and release locks.
 1. Step 1: Identify Catalog OS Chunks to compact and take their snapshots. This is similar to the first step of `querying a table` described above and will  <span style="color:red">acquire</span> and <span style="color:green">release</span> `S` locks on appropriate Table, Partition, and Chunks.
 1. Step 2: Compact the snapshots. This is similar to the third step of `querying a partition` that build a query plan for the snapshots and execute the plan. This step does not take any locks
@@ -120,6 +120,7 @@ As defined in [Data Organization and LifeCycle](data_organization_lifecycle.md),
 
 
 **Step 3: Persist the compacted data into a new OS Data Chunk**
+
 As described in [Catalog](catalogs.md), all OS Data Chunks are durable and should be able to recover in case of disaster. To do so, the information of Catalog Objects of these OS Data Chunks should also be persisted as `Catalog Transactions`. Note that `Catalog Transaction` is different from `Database Transaction` (or simply a `transaction`) mentioned in this document so far. `Catalog Transaction` only records something that has happened and does not trigger those actions. Since the job of Compact OS Chunks is to replace a few OS Data Chunks with a new OS Data Chunk, `Catalog Transactions` of the Catalog Objects of the new Data Chunk are also needed to get saved in the object store. Thus, this step includes two main sub-steps: (i) write the compacted data to a parquet file in the Object Store, and (ii) write the `Catalog Transactions` of the chunk created in sub-step i in the object store in a transaction. Since we do not want the parquet file created in sub-step i to get cleaned up by a background job because it does not have any Catalog Object refers to, we need to lock the `cleanup` lock during this step.  The whole process of this step can be split into many sub-steps as follows:
 
 1. Step a: <span style="color:red">Acquire</span> `S` lock on **cleanup lock** to ensure no cleanup jobs can remove any parquet files.
