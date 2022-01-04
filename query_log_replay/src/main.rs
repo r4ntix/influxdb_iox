@@ -2,6 +2,7 @@ use std::process::exit;
 
 use structopt::StructOpt;
 pub mod error;
+mod load;
 pub(crate) mod query;
 pub(crate) mod query_log;
 mod replay;
@@ -50,8 +51,8 @@ struct Config {
 #[derive(Debug, StructOpt)]
 enum Command {
     Save(save::Save),
-    // Clippy recommended boxing this variant because it's much larger than the others
     Replay(replay::Replay),
+    LoadReadBuffer(load::LoadReadBuffer),
 }
 
 #[tokio::main]
@@ -69,6 +70,7 @@ async fn main() {
     let command_result = match config.command {
         Command::Save(save) => save.execute(connection).await,
         Command::Replay(replay) => replay.execute(connection).await,
+        Command::LoadReadBuffer(lrb) => lrb.execute(connection).await,
     };
 
     match command_result {
