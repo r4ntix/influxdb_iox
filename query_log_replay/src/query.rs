@@ -80,6 +80,7 @@ impl Display for Query {
 }
 
 /// Information on the results of running a `Query`
+#[derive(Default, Debug)]
 pub struct QueryExecution {
     /// the total time to run the query (including network time)
     pub duration: Duration,
@@ -98,6 +99,16 @@ impl Display for QueryExecution {
             "{} rows {} frames in {:?}",
             self.num_rows, self.num_frames, self.duration
         )
+    }
+}
+
+impl QueryExecution {
+    /// Aggregate the exeuction with other
+    fn aggregate(mut self, other: &QueryExecution) -> Self {
+        self.duration += other.duration;
+        self.num_rows += other.num_rows;
+        self.num_frames += other.num_frames;
+        self
     }
 }
 
@@ -140,6 +151,120 @@ impl QueryExecutionBuilder {
             num_rows,
             num_frames,
         }
+    }
+}
+
+// Summarize multiple `QueryExecutions`
+#[derive(Debug, Default)]
+pub struct QueryExecutionSummary {
+    /// Total duration, num_rows, and num_frames
+    pub inner: QueryExecution,
+
+    /// minimum duration any query took
+    pub min_duration: Duration,
+
+    /// maximum duration any query took
+    pub max_duration: Duration,
+
+    /// The total number of executions aggregated
+    pub count: usize,
+}
+
+impl QueryExecutionSummary {
+    /// return something that displays headers for query execution summaries
+    pub fn header() -> impl Display {
+        struct Header {}
+        impl Display for Header {
+            fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+                write!(f, "total_duration_ms\tmin_duration_ms\tmax_duration_ms\tcount\ttotal_rows\ttotal_frames")
+            }
+        }
+        Header {}
+    }
+}
+
+impl Display for QueryExecutionSummary {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            self.inner.duration.as_millis(),
+            self.min_duration.as_millis(),
+            self.max_duration.as_millis(),
+            self.count,
+            self.inner.num_rows,
+            self.inner.num_frames,
+        )
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct QueryExecutionSummaryBuilder {
+    inner: Option<QueryExecution>,
+    min_duration: Option<Duration>,
+    max_duration: Option<Duration>,
+    count: usize,
+}
+
+impl QueryExecutionSummaryBuilder {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    /// What is the total duration represented by the executions so far?
+    pub fn total_duration(&self) -> Duration {
+        self.inner
+            .as_ref()
+            .map(|execution| execution.duration)
+            .unwrap_or_default()
+    }
+
+    pub fn build(self) -> QueryExecutionSummary {
+        QueryExecutionSummary {
+            inner: self.inner.unwrap(),
+            min_duration: self.min_duration.unwrap(),
+            max_duration: self.max_duration.unwrap(),
+            count: self.count,
+        }
+    }
+
+    /// Add the query execution to the builder
+    pub fn add(mut self, summary: QueryExecution) -> Self {
+        self.min_duration = Some(
+            self.min_duration
+                .take()
+                .map(|cur_min| {
+                    if summary.duration < cur_min {
+                        summary.duration
+                    } else {
+                        cur_min
+                    }
+                })
+                .unwrap_or(summary.duration),
+        );
+
+        self.max_duration = Some(
+            self.max_duration
+                .take()
+                .map(|cur_max| {
+                    if summary.duration > cur_max {
+                        summary.duration
+                    } else {
+                        cur_max
+                    }
+                })
+                .unwrap_or(summary.duration),
+        );
+
+        self.inner = Some(
+            self.inner
+                .take()
+                .map(|cur_inner| cur_inner.aggregate(&summary))
+                .unwrap_or_else(|| summary),
+        );
+
+        self.count += 1;
+        self
     }
 }
 

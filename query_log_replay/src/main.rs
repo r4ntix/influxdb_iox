@@ -60,7 +60,6 @@ async fn main() {
 
     println!("InfluxDB IOx Query Replay Tool... online");
 
-    // TODO create gRPC client / connection
     println!("Connecting to {}", config.host);
     let connection = influxdb_iox_client::connection::Builder::new()
         .build(&config.host)
