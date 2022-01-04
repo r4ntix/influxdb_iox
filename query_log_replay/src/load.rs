@@ -1,13 +1,12 @@
-use std::time::Duration;
+pub use std::time::Duration;
 
 use structopt::StructOpt;
 
 use influxdb_iox_client::{connection::Connection, management::generated_types::ChunkStorage};
 
 pub type Result<T, E = String> = std::result::Result<T, E>;
-use crate::error::StringifyError;
+use crate::{error::StringifyError, util::wait_for_jobs};
 
-const MAX_OPERATION_WAIT_SECS: u64 = 10;
 
 /// Ensure that all chunks have been loaded into the read buffer (rather than parquet)
 #[derive(Debug, StructOpt)]
@@ -70,24 +69,6 @@ impl LoadReadBuffer {
             };
         }
 
-        if !jobs.is_empty() {
-            let mut counter = 0;
-            let mut operation_client = influxdb_iox_client::operations::Client::new(connection);
-            print!("Waiting for {} jobs to complete", jobs.len());
-            for job in jobs {
-                let id = job.operation.id();
-                let timeout = Duration::from_secs(MAX_OPERATION_WAIT_SECS);
-                operation_client.wait_operation(id, Some(timeout))
-                .await
-                .context(&format!("waiting for operation to complete:{:#?}", job))?;
-                print!(".");
-                if (counter % 10) == 0 {
-                    print!("{}", id);
-                }
-                counter += 1
-            }
-            println!(" Done");
-        }
-        Ok(())
+        wait_for_jobs(connection, jobs).await
     }
 }

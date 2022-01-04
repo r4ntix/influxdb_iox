@@ -7,6 +7,8 @@ pub(crate) mod query;
 pub(crate) mod query_log;
 mod replay;
 mod save;
+mod compact;
+mod util;
 
 #[derive(Debug, StructOpt)]
 #[structopt(
@@ -53,6 +55,7 @@ enum Command {
     Save(save::Save),
     Replay(replay::Replay),
     LoadReadBuffer(load::LoadReadBuffer),
+    FullyCompact(compact::FullyCompact),
 }
 
 #[tokio::main]
@@ -68,9 +71,10 @@ async fn main() {
         .expect("Can not connect");
 
     let command_result = match config.command {
-        Command::Save(save) => save.execute(connection).await,
-        Command::Replay(replay) => replay.execute(connection).await,
+        Command::Save(s) => s.execute(connection).await,
+        Command::Replay(r) => r.execute(connection).await,
         Command::LoadReadBuffer(lrb) => lrb.execute(connection).await,
+        Command::FullyCompact(fc) => fc.execute(connection).await,
     };
 
     match command_result {
