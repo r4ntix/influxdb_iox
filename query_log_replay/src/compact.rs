@@ -37,7 +37,7 @@ impl FullyCompact {
                 .context("Starting partition compaction")?;
             jobs.push(job);
 
-            println!("done");
+            println!("scheduled");
         }
 
         wait_for_jobs(connection, jobs).await

@@ -25,7 +25,7 @@ pub async fn wait_for_jobs(connection: Connection, jobs: Vec<IoxOperation>) -> R
             .context(&format!("waiting for operation to complete:{:#?}", job))?;
         print!(".");
         if (counter % 10) == 0 {
-            print!("{}", id);
+            print!("{}", counter);
         }
         counter += 1
     }
