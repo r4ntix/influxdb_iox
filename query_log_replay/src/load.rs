@@ -7,7 +7,6 @@ use influxdb_iox_client::{connection::Connection, management::generated_types::C
 pub type Result<T, E = String> = std::result::Result<T, E>;
 use crate::{error::StringifyError, util::wait_for_jobs};
 
-
 /// Ensure that all chunks have been loaded into the read buffer (rather than parquet)
 #[derive(Debug, StructOpt)]
 pub struct LoadReadBuffer {

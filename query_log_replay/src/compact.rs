@@ -14,10 +14,7 @@ pub struct FullyCompact {
 
 impl FullyCompact {
     pub async fn execute(&self, connection: Connection) -> Result<()> {
-        println!(
-            "Ensuring all partitions have a single chunk {}",
-            self.db
-        );
+        println!("Ensuring all partitions have a single chunk {}", self.db);
 
         let mut client = influxdb_iox_client::management::Client::new(connection.clone());
 
@@ -34,11 +31,8 @@ impl FullyCompact {
             let partition_name = format!("Partition({}:{})", partition.table_name, partition.key);
             print!("{} ", partition_name);
 
-            let job = client.compact_object_store_partition(
-                &self.db,
-                &partition.table_name,
-                &partition.key
-            )
+            let job = client
+                .compact_object_store_partition(&self.db, &partition.table_name, &partition.key)
                 .await
                 .context("Starting partition compaction")?;
             jobs.push(job);
@@ -47,6 +41,5 @@ impl FullyCompact {
         }
 
         wait_for_jobs(connection, jobs).await
-
     }
 }

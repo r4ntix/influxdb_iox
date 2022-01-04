@@ -7,11 +7,10 @@ use crate::error::StringifyError;
 
 const MAX_OPERATION_WAIT_SECS: u64 = 10;
 
-
 /// Wait for all operations listed in `jobs` to complete, with status reporting
 pub async fn wait_for_jobs(connection: Connection, jobs: Vec<IoxOperation>) -> Result<()> {
     if jobs.is_empty() {
-        return Ok(())
+        return Ok(());
     }
 
     let mut counter = 0;
@@ -20,9 +19,10 @@ pub async fn wait_for_jobs(connection: Connection, jobs: Vec<IoxOperation>) -> R
     for job in jobs {
         let id = job.operation.id();
         let timeout = Duration::from_secs(MAX_OPERATION_WAIT_SECS);
-        operation_client.wait_operation(id, Some(timeout))
+        operation_client
+            .wait_operation(id, Some(timeout))
             .await
-                .context(&format!("waiting for operation to complete:{:#?}", job))?;
+            .context(&format!("waiting for operation to complete:{:#?}", job))?;
         print!(".");
         if (counter % 10) == 0 {
             print!("{}", id);

@@ -1,13 +1,13 @@
 use std::process::exit;
 
 use structopt::StructOpt;
+mod compact;
 pub mod error;
 mod load;
 pub(crate) mod query;
 pub(crate) mod query_log;
 mod replay;
 mod save;
-mod compact;
 mod util;
 
 #[derive(Debug, StructOpt)]

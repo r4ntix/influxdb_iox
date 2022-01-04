@@ -192,7 +192,7 @@ mod tests {
         let t_last_write = time.inc(Duration::from_secs(1));
         write_lp(db.as_ref(), "cpu,tag1=bongo,tag2=a bar=2 10");
 
-        let partition_keys = db.partition_keys().unwrap();
+        let partition_keys = db.partition_addrs().unwrap();
         assert_eq!(partition_keys.len(), 1);
 
         let partition = db.lockable_partition("cpu", &partition_keys[0]).unwrap();
@@ -248,7 +248,7 @@ mod tests {
         write_lp(db.as_ref(), "cpu,tag1=cupcakes bar=3 23");
         write_lp(db.as_ref(), "cpu,tag1=cupcakes bar=2 26");
 
-        let partition_keys = db.partition_keys().unwrap();
+        let partition_keys = db.partition_addrs().unwrap();
         assert_eq!(partition_keys.len(), 1);
 
         // Cannot simply use empty predicate (#2687)
@@ -306,7 +306,7 @@ mod tests {
         db.delete("cpu", Arc::clone(&pred2)).unwrap();
 
         // start compaction job (but don't poll the future yet)
-        let partition_keys = db.partition_keys().unwrap();
+        let partition_keys = db.partition_addrs().unwrap();
         assert_eq!(partition_keys.len(), 1);
         let partition_key: &str = partition_keys[0].as_ref();
 
