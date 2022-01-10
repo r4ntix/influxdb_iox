@@ -2238,6 +2238,23 @@ mod tests {
         let expr = lit("").eq(col("tag"));
         let expected = col("tag").is_null();
         assert_normalizer(&schema, expr, expected);
+
+        // String fields should not be rewritten
+        let expr = col("str").eq(lit(""));
+        let expected = expr.clone();
+        assert_normalizer(&schema, expr, expected);
+
+        let expr = lit("").eq(col("str"));
+        let expected = expr.clone();
+        assert_normalizer(&schema, expr, expected);
+
+
+        // '' = tag AND str = 'blah' --> tag IS NULL AND str = 'blah'
+        let expr = (lit("").eq(col("tag"))).and(col("str").eq(lit("blah")));
+        let expected = col("tag").is_null().and(col("str").eq(lit("blah")));
+        assert_normalizer(&schema, expr, expected);
+
+
     }
 
     fn assert_normalizer(schema: &Schema, expr: Expr, expected: Expr) {
@@ -2258,7 +2275,7 @@ mod tests {
         );
     }
 
-    // TODO write tests for table
+    // TODO write tests for table normalized
 
     #[test]
     fn test_field_value_rewriter() {
