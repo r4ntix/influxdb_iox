@@ -1387,9 +1387,9 @@ impl InfluxRpcPlanner {
         // Use a filter node to add general predicates + timestamp
         // range, if any
         if let Some(filter_expr) = predicate.filter_expr() {
-            // Rewrite expression so it only refers to columns in this chunk
+            // Handle references to tag columns that may / may not be in this chunk
             trace!(table_name, ?filter_expr, "Adding filter expr");
-            let mut rewriter = MissingColumnsToNull::new(&schema);
+            let mut rewriter = MissingTagColumns::new(&schema);
             let filter_expr = filter_expr
                 .rewrite(&mut rewriter)
                 .context(RewritingFilterPredicate { table_name })?;
@@ -1743,6 +1743,41 @@ fn make_selector_expr<'a>(
         .alias(col_name))
 }
 
+/// Adjusts the semantics of Exprs to match what is expected
+struct PredicateAdjuster {
+}
+
+impl ExprRewriter for PredicateAdjuster {
+    fn mutate(&mut self, expr: Expr) -> DatafusionResult<Expr> {
+        use Expr::BinaryExpr;
+        // Rewrite tag comparisons to empty string (influxql treats this as empty string)
+        // if the tag exists in this schema, turn it to "false"
+        // if the tag doesn't exist in this schema, turn it to "true"
+        let expr = match expr {
+            // col = '' --> col IS NULL
+            // https://github.com/influxdata/influxdb_iox/issues/3430
+            BinaryExpr {left, op: Operator::Eq, right} if  is_col(&left) && is_empty_str(&right)  => Expr::IsNull(left),
+            // '' = col --> col IS NULL
+            BinaryExpr {left, op: Operator::Eq, right} if  is_empty_str(&left) && is_col(&right)  => Expr::IsNull(right),
+            // No rewrite needed
+            expr => expr
+        };
+        Ok(expr)
+    }
+}
+
+impl PredicateAdjuster {
+    fn adjust(&mut self, mut pred: Predicate) -> Predicate {
+        let new_exprs = std::mem::take(&mut pred.exprs);
+        pred.exprs = new_exprs
+            .into_iter()
+            .map(|s| s.rewrite(self).expect("rewrite is infallible"))
+            .collect();
+        pred
+    }
+}
+
+
 /// Creates specialized / normalized predicates that are tailored to a specific
 /// table.
 #[derive(Debug)]
@@ -1753,8 +1788,9 @@ struct PredicateNormalizer {
 
 impl PredicateNormalizer {
     fn new(unnormalized: Predicate) -> Self {
+        let mut adjuster = PredicateAdjuster {};
         Self {
-            unnormalized,
+            unnormalized: adjuster.adjust(unnormalized),
             normalized: Default::default(),
         }
     }
@@ -1964,7 +2000,22 @@ impl<'a> ExprRewriter for FieldColumnRewriter<'a> {
     }
 }
 
-/// Rewrites the provided expr such that references to any column that
+/// Handles translating predicates to properly handle predicates on
+/// tags.
+///
+/// This means:
+///
+/// 1. Rewriting predicates like
+/// ```
+/// col = ''
+/// ```
+/// to
+/// ```
+/// col IS NULL
+/// ```
+/// To match influxql semantics: https://github.com/influxdata/influxdb_iox/issues/3430
+///
+/// 2. Rewriting the expr such that references to any column that
 /// are not present in `schema` become null.
 ///
 /// So for example, if the predicate is
@@ -1981,12 +2032,12 @@ impl<'a> ExprRewriter for FieldColumnRewriter<'a> {
 /// and measurements can have different subsets of the columns, only
 /// parts of the predicate make sense.
 /// See comments on 'is_null_column'
-struct MissingColumnsToNull<'a> {
+struct MissingTagColumns<'a> {
     schema: &'a Schema,
     df_schema: DFSchema,
 }
 
-impl<'a> MissingColumnsToNull<'a> {
+impl<'a> MissingTagColumns<'a> {
     pub fn new(schema: &'a Schema) -> Self {
         let df_schema: DFSchema = schema
             .as_arrow()
@@ -2031,9 +2082,26 @@ impl<'a> MissingColumnsToNull<'a> {
     }
 }
 
-impl<'a> ExprRewriter for MissingColumnsToNull<'a> {
+impl<'a> ExprRewriter for MissingTagColumns<'a> {
     fn mutate(&mut self, expr: Expr) -> DatafusionResult<Expr> {
-        // Ideally this would simply find all Expr::Columns and
+        use Expr::BinaryExpr;
+
+        // Rewrite tag comparisons to empty string (influxql treats this as empty string)
+        // if the tag exists in this schema, turn it to "false"
+        // if the tag doesn't exist in this schema, turn it to "true"
+        let expr = match expr {
+            // col = '' --> col IS NULL
+            // https://github.com/influxdata/influxdb_iox/issues/3430
+            BinaryExpr {left, op: Operator::Eq, right} if  is_col(&left) && is_empty_str(&right)  => Expr::IsNull(left),
+            // '' = col --> col IS NULL
+            BinaryExpr {left, op: Operator::Eq, right} if  is_empty_str(&left) && is_col(&right)  => Expr::IsNull(right),
+            // No rewrite needed
+            expr => expr
+        };
+
+        // Now rewrite references to missing columns to NULL
+        //
+        // NB: Ideally this would simply find all Expr::Columns and
         // replace them with a constant NULL value. However, doing do
         // is blocked on DF bug
         // https://github.com/apache/arrow-datafusion/issues/1179
@@ -2053,6 +2121,20 @@ impl<'a> ExprRewriter for MissingColumnsToNull<'a> {
         }
     }
 }
+
+
+fn is_col(e:&Expr) -> bool {
+    matches!(e, Expr::Column(_))
+}
+
+fn is_empty_str(e:&Expr) -> bool {
+    if let Expr::Literal(ScalarValue::Utf8(Some(s))) = e {
+        s == ""
+    } else {
+        false
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -2135,7 +2217,7 @@ mod tests {
     }
 
     fn assert_rewrite(schema: &Schema, expr: &Expr, expected: &Expr) {
-        let mut rewriter = MissingColumnsToNull::new(schema);
+        let mut rewriter = MissingTagColumns::new(schema);
         let rewritten_expr = expr
             .clone()
             .rewrite(&mut rewriter)

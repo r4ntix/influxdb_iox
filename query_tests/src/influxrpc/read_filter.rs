@@ -553,6 +553,44 @@ async fn test_read_filter_data_pred_unsupported_in_scan_with_delete() {
 }
 
 #[derive(Debug)]
+pub struct EmptyTag {}
+#[async_trait]
+impl DbSetup for EmptyTag {
+    async fn make(&self) -> Vec<DbScenario> {
+        let partition_key = "1970-01-01T00";
+
+        let lp_lines = vec![
+            "cpu value=1 100",
+            "cpu,host=server01 value=2 200",
+        ];
+
+        all_scenarios_for_one_chunk(vec![], vec![], lp_lines, "cpu", partition_key).await
+    }
+}
+
+
+#[tokio::test]
+async fn read_filter_empty_tag() {
+    test_helpers::maybe_start_logging();
+    let predicate = PredicateBuilder::default()
+        // Predicate on host='' means return series that don't have that tag
+        .add_expr(col("host").eq(lit("")))
+        .build();
+
+    let expected_results = vec![
+        "Series tags={_measurement=cpu, _field=value}\n  FloatPoints timestamps: [100], values: [1.0]",
+    ];
+
+    run_read_filter_test_case(
+        EmptyTag {},
+        predicate,
+        expected_results,
+    )
+    .await;
+}
+
+
+#[derive(Debug)]
 pub struct MeasurementsSortableTags {}
 #[async_trait]
 impl DbSetup for MeasurementsSortableTags {
