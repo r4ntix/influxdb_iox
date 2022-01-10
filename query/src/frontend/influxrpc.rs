@@ -2123,6 +2123,7 @@ impl<'a> ExprRewriter for MissingColumnsToNull<'a> {
 #[cfg(test)]
 mod tests {
     use datafusion::logical_plan::{binary_expr, Operator};
+    use predicate::predicate::PredicateBuilder;
     use schema::builder::SchemaBuilder;
 
     use super::*;
@@ -2213,6 +2214,51 @@ mod tests {
             expr, rewritten_expr, expected
         );
     }
+
+    #[test]
+    fn test_predicate_normalizer() {
+        let schema = SchemaBuilder::new()
+            .tag("tag")
+            .field("str", DataType::Utf8)
+            .field("int", DataType::Int64)
+            .build()
+            .unwrap();
+
+        // no rewrite
+        let expr = lit(1);
+        let expected = expr.clone();
+        assert_normalizer(&schema, expr, expected);
+
+        // tag = '' --> tag IS NULL
+        let expr = col("tag").eq(lit(""));
+        let expected = col("tag").is_null();
+        assert_normalizer(&schema, expr, expected);
+
+        // '' = tag --> tag IS NULL
+        let expr = lit("").eq(col("tag"));
+        let expected = col("tag").is_null();
+        assert_normalizer(&schema, expr, expected);
+    }
+
+    fn assert_normalizer(schema: &Schema, expr: Expr, expected: Expr) {
+        let predicate = PredicateBuilder::default()
+            .add_expr(expr.clone())
+            .build();
+
+        let normalizer = PredicateNormalizer::new(predicate);
+
+        let mut rewritten_exprs = normalizer.unnormalized().exprs.clone();
+        assert_eq!(rewritten_exprs.len(), 1);
+        let rewritten_expr = rewritten_exprs.pop().unwrap();
+
+        assert_eq!(
+            &rewritten_expr, &expected,
+            "Mismatch rewriting\nInput: {}\nRewritten: {}\nExpected: {}",
+            expr, rewritten_expr, expected
+        );
+    }
+
+    // TODO write tests for table
 
     #[test]
     fn test_field_value_rewriter() {
