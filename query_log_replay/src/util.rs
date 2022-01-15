@@ -13,10 +13,9 @@ pub async fn wait_for_jobs(connection: Connection, jobs: Vec<IoxOperation>) -> R
         return Ok(());
     }
 
-    let mut counter = 0;
     let mut operation_client = influxdb_iox_client::operations::Client::new(connection);
     print!("Waiting for {} jobs to complete", jobs.len());
-    for job in jobs {
+    for (counter, job) in jobs.into_iter().enumerate() {
         let id = job.operation.id();
         let timeout = Duration::from_secs(MAX_OPERATION_WAIT_SECS);
         operation_client
@@ -27,7 +26,6 @@ pub async fn wait_for_jobs(connection: Connection, jobs: Vec<IoxOperation>) -> R
         if (counter % 10) == 0 {
             print!("{}", counter);
         }
-        counter += 1
     }
     println!(" Done");
 
