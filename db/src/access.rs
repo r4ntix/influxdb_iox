@@ -5,7 +5,6 @@ use super::{
     catalog::{Catalog, TableNameFilter},
     chunk::DbChunk,
     query_log::QueryLog,
-    Error, Result,
 };
 use crate::system_tables;
 use async_trait::async_trait;
@@ -23,7 +22,7 @@ use predicate::predicate::{Predicate, PredicateBuilder};
 use query::{
     provider::{ChunkPruner, ProviderBuilder},
     pruning::{prune_chunks, PruningObserver},
-    QueryChunk, QueryChunkMeta, QueryDatabase, DEFAULT_SCHEMA,
+    QueryChunk, QueryChunkMeta, QueryCompletedToken, QueryDatabase, DEFAULT_SCHEMA,
 };
 use schema::Schema;
 use std::{any::Any, sync::Arc};
@@ -213,7 +212,6 @@ impl PruningObserver for ChunkAccess {
 
 #[async_trait]
 impl QueryDatabase for QueryCatalogAccess {
-    type Error = Error;
     type Chunk = DbChunk;
 
     /// Return a covering set of chunks for a particular partition
@@ -221,12 +219,12 @@ impl QueryDatabase for QueryCatalogAccess {
         self.chunk_access.candidate_chunks(predicate)
     }
 
-    fn partition_addrs(&self) -> Result<Vec<PartitionAddr>, Self::Error> {
-        Ok(self.catalog.partition_addrs())
+    fn partition_addrs(&self) -> Vec<PartitionAddr> {
+        self.catalog.partition_addrs()
     }
 
-    fn chunk_summaries(&self) -> Result<Vec<ChunkSummary>> {
-        Ok(self.catalog.chunk_summaries())
+    fn chunk_summaries(&self) -> Vec<ChunkSummary> {
+        self.catalog.chunk_summaries()
     }
 
     fn table_schema(&self, table_name: &str) -> Option<Arc<Schema>> {
@@ -236,8 +234,15 @@ impl QueryDatabase for QueryCatalogAccess {
             .map(|table| Arc::clone(&table.schema().read()))
     }
 
-    fn record_query(&self, query_type: impl Into<String>, query_text: impl Into<String>) {
-        self.query_log.push(query_type, query_text)
+    fn record_query(
+        &self,
+        query_type: impl Into<String>,
+        query_text: impl Into<String>,
+    ) -> QueryCompletedToken<'_> {
+        // When the query token is dropped the query entry's completion time
+        // will be set.
+        let entry = self.query_log.push(query_type, query_text);
+        QueryCompletedToken::new(move || self.query_log.set_completed(entry))
     }
 }
 

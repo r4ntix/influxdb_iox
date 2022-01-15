@@ -18,7 +18,7 @@ impl From<Error> for Status {
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// A gRPC router containing an invocation of the [`grpc_router`] macro must
-/// implement this trait.   
+/// implement this trait.
 #[tonic::async_trait]
 pub trait Router<R, S, C> {
     /// For a given request return the routing decision for the call.
@@ -40,7 +40,7 @@ pub enum RoutingDestination<'a, S, C> {
 }
 
 /// Needs to be public because it's used by the [`grpc_router`] macro.
-pub type PinnedStream<T> = Pin<Box<dyn Stream<Item = Result<T, tonic::Status>> + Send + Sync>>;
+pub type PinnedStream<T> = Pin<Box<dyn Stream<Item = Result<T, tonic::Status>> + Send>>;
 
 /// Needs to be public because it's used by the [`grpc_router`] macro.
 pub fn pinned_response<T: 'static>(res: Response<Streaming<T>>) -> Response<PinnedStream<T>> {
@@ -201,7 +201,7 @@ pub mod tests {
             let addr: SocketAddr = "127.0.0.1:0".parse()?;
             let listener = tokio::net::TcpListener::bind(addr).await?;
             let local_addr = listener.local_addr()?;
-            let local_addr = format!("http://{}", local_addr.to_string());
+            let local_addr = format!("http://{}", local_addr);
 
             tokio::spawn(async move {
                 Server::builder()

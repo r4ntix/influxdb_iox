@@ -293,7 +293,7 @@ impl IoxMetadata {
         // extract protobuf message from bytes
         let proto_msg = proto::IoxMetadata::decode(data)
             .map_err(|err| Box::new(err) as _)
-            .context(IoxMetadataBroken)?;
+            .context(IoxMetadataBrokenSnafu)?;
 
         // check version
         if proto_msg.version != METADATA_VERSION {
@@ -321,7 +321,7 @@ impl IoxMetadata {
         let proto_partition_checkpoint =
             proto_msg
                 .partition_checkpoint
-                .context(IoxMetadataFieldMissing {
+                .context(IoxMetadataFieldMissingSnafu {
                     field: "partition_checkpoint",
                 })?;
         let sequencer_numbers = proto_partition_checkpoint
@@ -352,7 +352,7 @@ impl IoxMetadata {
         let proto_database_checkpoint =
             proto_msg
                 .database_checkpoint
-                .context(IoxMetadataFieldMissing {
+                .context(IoxMetadataFieldMissingSnafu {
                     field: "database_checkpoint",
                 })?;
         let sequencer_numbers = proto_database_checkpoint
@@ -376,7 +376,10 @@ impl IoxMetadata {
             time_of_last_write,
             table_name,
             partition_key,
-            chunk_id: proto_msg.chunk_id.try_into().context(CannotDecodeChunkId)?,
+            chunk_id: proto_msg
+                .chunk_id
+                .try_into()
+                .context(CannotDecodeChunkIdSnafu)?,
             partition_checkpoint,
             database_checkpoint,
             chunk_order: ChunkOrder::new(proto_msg.chunk_order).ok_or_else(|| {
@@ -456,10 +459,10 @@ fn decode_timestamp_from_field(
     field: &'static str,
 ) -> Result<Time> {
     let date_time = value
-        .context(IoxMetadataFieldMissing { field })?
+        .context(IoxMetadataFieldMissingSnafu { field })?
         .try_into()
         .map_err(|e| Box::new(e) as _)
-        .context(IoxMetadataBroken)?;
+        .context(IoxMetadataBrokenSnafu)?;
 
     Ok(Time::from_date_time(date_time))
 }
@@ -488,7 +491,7 @@ impl IoxParquetMetaData {
         }
 
         let cursor = SliceableCursor::new(data);
-        let reader = SerializedFileReader::new(cursor).context(ParquetMetaDataRead {})?;
+        let reader = SerializedFileReader::new(cursor).context(ParquetMetaDataReadSnafu {})?;
         let parquet_md = reader.metadata().clone();
 
         let data = Self::parquet_md_to_thrift(parquet_md)?;
@@ -531,7 +534,7 @@ impl IoxParquetMetaData {
 
         let file_metadata = parquet_md.file_metadata();
         let thrift_schema =
-            schema_to_thrift(file_metadata.schema()).context(ParquetSchemaToThrift {})?;
+            schema_to_thrift(file_metadata.schema()).context(ParquetSchemaToThriftSnafu {})?;
         let thrift_row_groups: Vec<_> = parquet_md
             .row_groups()
             .iter()
@@ -549,6 +552,8 @@ impl IoxParquetMetaData {
             row_groups: thrift_row_groups,
             key_value_metadata: file_metadata.key_value_metadata().clone(),
             created_by: file_metadata.created_by().clone(),
+            encryption_algorithm: None,
+            footer_signing_key_metadata: None,
         };
 
         // step 2: serialize the thrift struct into bytes
@@ -557,13 +562,13 @@ impl IoxParquetMetaData {
             let mut protocol = TCompactOutputProtocol::new(&mut buffer);
             thrift_file_metadata
                 .write_to_out_protocol(&mut protocol)
-                .context(ThriftWriteFailure {})?;
-            protocol.flush().context(ThriftWriteFailure {})?;
+                .context(ThriftWriteFailureSnafu {})?;
+            protocol.flush().context(ThriftWriteFailureSnafu {})?;
         }
 
         // step 3: compress data
         // Note: level 0 is the zstd-provided default
-        let buffer = zstd::encode_all(&buffer[..], 0).context(ZstdEncodeFailure)?;
+        let buffer = zstd::encode_all(&buffer[..], 0).context(ZstdEncodeFailureSnafu)?;
 
         Ok(buffer)
     }
@@ -575,26 +580,26 @@ impl IoxParquetMetaData {
     /// [Zstandard]: http://facebook.github.io/zstd/
     pub fn decode(&self) -> Result<DecodedIoxParquetMetaData> {
         // step 1: decompress
-        let data = zstd::decode_all(&self.data[..]).context(ZstdDecodeFailure)?;
+        let data = zstd::decode_all(&self.data[..]).context(ZstdDecodeFailureSnafu)?;
 
         // step 2: load thrift data from byte stream
         let thrift_file_metadata = {
             let mut protocol = TCompactInputProtocol::new(&data[..]);
             parquet_format::FileMetaData::read_from_in_protocol(&mut protocol)
-                .context(ThriftReadFailure {})?
+                .context(ThriftReadFailureSnafu {})?
         };
 
         // step 3: convert thrift to in-mem structs
         use parquet::schema::types::from_thrift as schema_from_thrift;
 
-        let schema =
-            schema_from_thrift(&thrift_file_metadata.schema).context(ParquetSchemaFromThrift {})?;
+        let schema = schema_from_thrift(&thrift_file_metadata.schema)
+            .context(ParquetSchemaFromThriftSnafu {})?;
         let schema_descr = Arc::new(ParquetSchemaDescriptor::new(schema));
         let mut row_groups = Vec::with_capacity(thrift_file_metadata.row_groups.len());
         for rg in thrift_file_metadata.row_groups {
             row_groups.push(
                 ParquetRowGroupMetaData::from_thrift(Arc::clone(&schema_descr), rg)
-                    .context(ParquetRowGroupFromThrift {})?,
+                    .context(ParquetRowGroupFromThriftSnafu {})?,
             );
         }
         // TODO: parse column order, or ignore it: https://github.com/influxdata/influxdb_iox/issues/1408
@@ -639,16 +644,16 @@ impl DecodedIoxParquetMetaData {
             .file_metadata()
             .key_value_metadata()
             .as_ref()
-            .context(IoxMetadataMissing)?
+            .context(IoxMetadataMissingSnafu)?
             .iter()
             .find(|kv| kv.key == METADATA_KEY)
-            .context(IoxMetadataMissing)?;
+            .context(IoxMetadataMissingSnafu)?;
 
         // extract protobuf message from key-value entry
-        let proto_base64 = kv.value.as_ref().context(IoxMetadataMissing)?;
+        let proto_base64 = kv.value.as_ref().context(IoxMetadataMissingSnafu)?;
         let proto_bytes = base64::decode(proto_base64)
             .map_err(|err| Box::new(err) as _)
-            .context(IoxMetadataBroken)?;
+            .context(IoxMetadataBrokenSnafu)?;
 
         // convert to Rust object
         IoxMetadata::from_protobuf(proto_bytes.as_slice())
@@ -662,19 +667,19 @@ impl DecodedIoxParquetMetaData {
             file_metadata.schema_descr(),
             file_metadata.key_value_metadata(),
         )
-        .context(ArrowFromParquetFailure {})?;
+        .context(ArrowFromParquetFailureSnafu {})?;
 
         let arrow_schema_ref = Arc::new(arrow_schema);
 
         let schema: Schema = arrow_schema_ref
             .try_into()
-            .context(IoxFromArrowFailure {})?;
+            .context(IoxFromArrowFailureSnafu {})?;
         Ok(Arc::new(schema))
     }
 
     /// Read IOx statistics (including timestamp range) from parquet metadata.
     pub fn read_statistics(&self, schema: &Schema) -> Result<Vec<ColumnSummary>> {
-        ensure!(!self.md.row_groups().is_empty(), NoRowGroup);
+        ensure!(!self.md.row_groups().is_empty(), NoRowGroupSnafu);
 
         let mut column_summaries = Vec::with_capacity(schema.len());
 
@@ -699,24 +704,24 @@ fn read_statistics_from_parquet_row_group(
 
     for ((iox_type, field), column_chunk_metadata) in schema.iter().zip(row_group.columns()) {
         if let Some(iox_type) = iox_type {
-            let parquet_stats = column_chunk_metadata
-                .statistics()
-                .context(StatisticsMissing {
-                    row_group: row_group_idx,
-                    column: field.name().clone(),
-                })?;
+            let parquet_stats =
+                column_chunk_metadata
+                    .statistics()
+                    .context(StatisticsMissingSnafu {
+                        row_group: row_group_idx,
+                        column: field.name().clone(),
+                    })?;
 
             let min_max_set = parquet_stats.has_min_max_set();
             if min_max_set && parquet_stats.is_min_max_deprecated() {
-                StatisticsMinMaxDeprecated {
+                StatisticsMinMaxDeprecatedSnafu {
                     row_group: row_group_idx,
                     column: field.name().clone(),
                 }
                 .fail()?;
             }
 
-            let count =
-                (row_group.num_rows().max(0) as u64).saturating_sub(parquet_stats.null_count());
+            let count = row_group.num_rows().max(0) as u64;
 
             let stats = extract_iox_statistics(
                 parquet_stats,
@@ -834,7 +839,7 @@ fn extract_iox_statistics(
                         stats
                             .min()
                             .as_utf8()
-                            .context(StatisticsUtf8Error {
+                            .context(StatisticsUtf8Snafu {
                                 row_group: row_group_idx,
                                 column: column_name.to_string(),
                             })
@@ -846,7 +851,7 @@ fn extract_iox_statistics(
                         stats
                             .max()
                             .as_utf8()
-                            .context(StatisticsUtf8Error {
+                            .context(StatisticsUtf8Snafu {
                                 row_group: row_group_idx,
                                 column: column_name.to_string(),
                             })
@@ -898,6 +903,8 @@ mod tests {
             .iter()
             .zip(table_summary_expected.columns.iter())
         {
+            assert_eq!(actual_column.stats.total_count() as usize, chunk.rows());
+            assert_eq!(expected_column.stats.total_count() as usize, chunk.rows());
             assert_eq!(actual_column, expected_column);
         }
     }
@@ -951,8 +958,20 @@ mod tests {
         // check that column counts are consistent
         let n_rows = decoded.md.file_metadata().num_rows() as u64;
         assert!(n_rows >= decoded.md.num_row_groups() as u64);
-        for summary in &chunk.table_summary().columns {
-            assert!(summary.total_count() <= n_rows);
+        for (col_idx, summary) in chunk.table_summary().columns.iter().enumerate() {
+            let mut num_values = 0;
+            let mut null_count = 0;
+
+            for row_group in decoded.md.row_groups() {
+                let column_chunk = row_group.column(col_idx);
+                num_values += column_chunk.num_values();
+                null_count += column_chunk.statistics().unwrap().null_count();
+            }
+
+            assert_eq!(summary.total_count(), num_values as u64);
+            assert_eq!(summary.total_count(), n_rows);
+            assert_eq!(summary.null_count(), null_count);
+            assert!(summary.null_count() <= summary.total_count());
         }
 
         // check column names
@@ -1007,6 +1026,6 @@ mod tests {
         let mut generator = ChunkGenerator::new().await;
         let (chunk, _) = generator.generate().await.unwrap();
         let parquet_metadata = chunk.parquet_metadata();
-        assert_eq!(parquet_metadata.size(), 3729);
+        assert_eq!(parquet_metadata.size(), 3719);
     }
 }

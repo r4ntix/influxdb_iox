@@ -4,6 +4,7 @@
 //! AKA it is a Mock
 
 use crate::exec::{ExecutionContextProvider, Executor, ExecutorType, IOxExecutionContext};
+use crate::QueryCompletedToken;
 use crate::{
     exec::stringset::{StringSet, StringSetRef},
     Predicate, PredicateMatch, QueryChunk, QueryChunkMeta, QueryDatabase,
@@ -96,13 +97,12 @@ impl TestDatabase {
 }
 
 impl QueryDatabase for TestDatabase {
-    type Error = TestError;
     type Chunk = TestChunk;
 
     /// Return the partition keys for data in this DB
-    fn partition_addrs(&self) -> Result<Vec<PartitionAddr>, Self::Error> {
+    fn partition_addrs(&self) -> Vec<PartitionAddr> {
         let partitions = self.partitions.lock();
-        let addrs = partitions
+        partitions
             .values()
             .filter_map(|chunks| {
                 // each partition has some number of chunks which
@@ -113,9 +113,7 @@ impl QueryDatabase for TestDatabase {
                     .next()
                     .map(|chunk| chunk.addr().into_partition())
             })
-            .collect();
-
-        Ok(addrs)
+            .collect()
     }
 
     fn chunks(&self, _predicate: &Predicate) -> Vec<Arc<Self::Chunk>> {
@@ -127,7 +125,7 @@ impl QueryDatabase for TestDatabase {
             .collect()
     }
 
-    fn chunk_summaries(&self) -> Result<Vec<ChunkSummary>, Self::Error> {
+    fn chunk_summaries(&self) -> Vec<ChunkSummary> {
         unimplemented!("summaries not implemented TestDatabase")
     }
 
@@ -148,7 +146,13 @@ impl QueryDatabase for TestDatabase {
         found_one.then(|| Arc::new(merger.build()))
     }
 
-    fn record_query(&self, _query_type: impl Into<String>, _query_text: impl Into<String>) {}
+    fn record_query(
+        &self,
+        _query_type: impl Into<String>,
+        _query_text: impl Into<String>,
+    ) -> QueryCompletedToken<'_> {
+        QueryCompletedToken::new(|| {})
+    }
 }
 
 impl ExecutionContextProvider for TestDatabase {
@@ -293,7 +297,7 @@ impl TestChunk {
     /// Checks the saved error, and returns it if any, otherwise returns OK
     fn check_error(&self) -> Result<()> {
         if let Some(message) = self.saved_error.as_ref() {
-            General { message }.fail()
+            GeneralSnafu { message }.fail()
         } else {
             Ok(())
         }

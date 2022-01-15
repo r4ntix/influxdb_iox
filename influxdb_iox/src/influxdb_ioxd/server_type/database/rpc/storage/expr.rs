@@ -23,7 +23,7 @@ use super::{TAG_KEY_FIELD, TAG_KEY_MEASUREMENT};
 use observability_deps::tracing::warn;
 use predicate::{predicate::PredicateBuilder, regex::regex_match_expr};
 use query::{
-    frontend::influxrpc::MEASUREMENT_COLUMN_NAME,
+    frontend::influxrpc::{FIELD_COLUMN_NAME, MEASUREMENT_COLUMN_NAME},
     group_by::{Aggregate as QueryAggregate, WindowDuration},
 };
 use snafu::{OptionExt, ResultExt, Snafu};
@@ -63,9 +63,6 @@ pub enum Error {
         description
     ))]
     InvalidWindowOffsetDuration { description: String },
-
-    #[snafu(display("Internal error: found field tag reference in unexpected location"))]
-    InternalInvalidFieldReference {},
 
     #[snafu(display("Invalid regex pattern"))]
     RegExpPatternInvalid {},
@@ -182,7 +179,7 @@ impl AddRpcNode for PredicateBuilder {
             None => Ok(self),
             Some(rpc_predicate) => {
                 match rpc_predicate.root {
-                    None => EmptyPredicateNode {}.fail(),
+                    None => EmptyPredicateNodeSnafu {}.fail(),
                     Some(node) => {
                         // normalize so the rest of the passes can deal with fewer cases
                         let node = normalize_node(node)?;
@@ -232,7 +229,7 @@ fn normalize_node(node: RPCNode) -> Result<RPCNode> {
         // which seems some sort of wrapper -- unwrap this case
         (None, 1) => Ok(normalized_children.pop().unwrap()),
         // It is not clear what None means without exactly one child..
-        (None, _) => EmptyPredicateValue {}.fail(),
+        (None, _) => EmptyPredicateValueSnafu {}.fail(),
         (Some(value), _) => {
             // performance any other normalizations needed
             Ok(RPCNode {
@@ -244,12 +241,11 @@ fn normalize_node(node: RPCNode) -> Result<RPCNode> {
     }
 }
 
-/// Converts the node and updates the `StoragePredicate` being built, as
-/// appropriate
+/// Converts the node and updates the `PredicateBuilder`
+/// appropriately
 ///
-/// It recognizes special predicate patterns and pulls them into
-/// the fields on `StoragePredicate` for special processing. If no
-/// patterns are matched, it falls back to a generic DataFusion Expr
+/// It recognizes special predicate patterns. If no patterns are
+/// matched, it falls back to a generic DataFusion Expr
 fn convert_simple_node(builder: PredicateBuilder, node: RPCNode) -> Result<PredicateBuilder> {
     if let Ok(in_list) = InList::try_from(&node) {
         let InList { lhs, value_list } = in_list;
@@ -426,11 +422,10 @@ fn make_tag_name(tag_name: Vec<u8>) -> Result<String> {
         // convert to "_measurement" which is handled specially in grpc planner
         Ok(MEASUREMENT_COLUMN_NAME.to_string())
     } else if tag_name.is_field() {
-        // These should have been handled at a higher level -- if we get
-        // here it is too late
-        InternalInvalidFieldReference.fail()
+        // convert to "_field" which is handled specially in grpc planner
+        Ok(FIELD_COLUMN_NAME.to_string())
     } else {
-        String::from_utf8(tag_name).context(ConvertingTagName)
+        String::from_utf8(tag_name).context(ConvertingTagNameSnafu)
     }
 }
 
@@ -440,7 +435,7 @@ fn build_node(value: RPCValue, inputs: Vec<Expr>) -> Result<Expr> {
     let can_have_children = matches!(&value, RPCValue::Logical(_) | RPCValue::Comparison(_));
 
     if !can_have_children && !inputs.is_empty() {
-        return UnexpectedChildren { value }.fail();
+        return UnexpectedChildrenSnafu { value }.fail();
     }
 
     match value {
@@ -464,7 +459,7 @@ fn build_logical_node(logical: i32, inputs: Vec<Expr>) -> Result<Expr> {
     match logical_enum {
         Some(RPCLogical::And) => build_binary_expr(Operator::And, inputs),
         Some(RPCLogical::Or) => build_binary_expr(Operator::Or, inputs),
-        None => UnknownLogicalNode { logical }.fail(),
+        None => UnknownLogicalNodeSnafu { logical }.fail(),
     }
 }
 
@@ -475,14 +470,14 @@ fn build_comparison_node(comparison: i32, inputs: Vec<Expr>) -> Result<Expr> {
     match comparison_enum {
         Some(RPCComparison::Equal) => build_binary_expr(Operator::Eq, inputs),
         Some(RPCComparison::NotEqual) => build_binary_expr(Operator::NotEq, inputs),
-        Some(RPCComparison::StartsWith) => StartsWithNotSupported {}.fail(),
+        Some(RPCComparison::StartsWith) => StartsWithNotSupportedSnafu {}.fail(),
         Some(RPCComparison::Regex) => build_regex_match_expr(true, inputs),
         Some(RPCComparison::NotRegex) => build_regex_match_expr(false, inputs),
         Some(RPCComparison::Lt) => build_binary_expr(Operator::Lt, inputs),
         Some(RPCComparison::Lte) => build_binary_expr(Operator::LtEq, inputs),
         Some(RPCComparison::Gt) => build_binary_expr(Operator::Gt, inputs),
         Some(RPCComparison::Gte) => build_binary_expr(Operator::GtEq, inputs),
-        None => UnknownComparisonNode { comparison }.fail(),
+        None => UnknownComparisonNodeSnafu { comparison }.fail(),
     }
 }
 
@@ -498,7 +493,7 @@ fn build_binary_expr(op: Operator, inputs: Vec<Expr>) -> Result<Expr> {
             op,
             inputs[1].take().unwrap(),
         )),
-        _ => UnsupportedNumberOfChildren { op, num_children }.fail(),
+        _ => UnsupportedNumberOfChildrenSnafu { op, num_children }.fail(),
     }
 }
 
@@ -509,14 +504,14 @@ fn build_regex_match_expr(matches: bool, mut inputs: Vec<Expr>) -> Result<Expr> 
     match num_children {
         2 => {
             let pattern = if let Expr::Literal(ScalarValue::Utf8(pattern)) = inputs.remove(1) {
-                pattern.context(RegExpPatternInvalid)?
+                pattern.context(RegExpPatternInvalidSnafu)?
             } else {
-                return InternalInvalidRegexExprReference.fail();
+                return InternalInvalidRegexExprReferenceSnafu.fail();
             };
 
             Ok(regex_match_expr(inputs.remove(0), pattern, matches))
         }
-        _ => InternalInvalidRegexExprChildren { num_children }.fail(),
+        _ => InternalInvalidRegexExprChildrenSnafu { num_children }.fail(),
     }
 }
 
@@ -528,7 +523,7 @@ pub fn make_read_group_aggregate(
     // validate Group setting
     match group {
         // Group:None is invalid if grouping keys are specified
-        RPCGroup::None if !group_keys.is_empty() => InvalidGroupNone {
+        RPCGroup::None if !group_keys.is_empty() => InvalidGroupNoneSnafu {
             num_group_keys: group_keys.len(),
         }
         .fail(),
@@ -551,7 +546,7 @@ pub fn make_read_window_aggregate(
 ) -> Result<GroupByAndAggregate> {
     // only support single aggregate for now
     if aggregates.len() != 1 {
-        return AggregateNotSingleton { aggregates }.fail();
+        return AggregateNotSingletonSnafu { aggregates }.fail();
     }
     let agg = convert_aggregate(aggregates.into_iter().next())?;
 
@@ -566,7 +561,7 @@ pub fn make_read_window_aggregate(
     // nanosecond values, then the Window will be ignored
 
     let (every, offset) = match (window, window_every, offset) {
-        (None, 0, 0) => return EmptyWindow {}.fail(),
+        (None, 0, 0) => return EmptyWindowSnafu {}.fail(),
         (Some(window), 0, 0) => (
             convert_duration(window.every, DurationValidation::ForbidZero).map_err(|e| {
                 Error::InvalidWindowEveryDuration {
@@ -643,7 +638,7 @@ fn convert_aggregate(aggregate: Option<RPCAggregate>) -> Result<QueryAggregate> 
         Some(RPCAggregateType::First) => Ok(QueryAggregate::First),
         Some(RPCAggregateType::Last) => Ok(QueryAggregate::Last),
         Some(RPCAggregateType::Mean) => Ok(QueryAggregate::Mean),
-        None => UnknownAggregate { aggregate_type }.fail(),
+        None => UnknownAggregateSnafu { aggregate_type }.fail(),
     }
 }
 
@@ -697,25 +692,20 @@ fn format_predicate<'a>(pred: &'a RPCPredicate, f: &mut fmt::Formatter<'_>) -> f
 }
 
 fn format_node<'a>(node: &'a RPCNode, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    let value = match &node.value {
-        None => {
-            write!(f, "node: NONE")?;
-            return Ok(());
-        }
-        Some(value) => value,
-    };
+    // Note for "ParenExpresion" value is None
+    let value = node.value.as_ref();
 
     match node.children.len() {
         0 => {
-            format_value(value, f)?;
+            format_opt_value(value, f)?;
         }
         // print using infix notation
         // (child0 <op> child1)
-        2 => {
+        2 if node.value.is_some() => {
             write!(f, "(")?;
             format_node(&node.children[0], f)?;
             write!(f, " ")?;
-            format_value(value, f)?;
+            format_opt_value(value, f)?;
             write!(f, " ")?;
             format_node(&node.children[1], f)?;
             write!(f, ")")?;
@@ -723,7 +713,7 @@ fn format_node<'a>(node: &'a RPCNode, f: &mut fmt::Formatter<'_>) -> fmt::Result
         // print func notation
         // <op>(child0, chold1, ...)
         _ => {
-            format_value(value, f)?;
+            format_opt_value(value, f)?;
             write!(f, "(")?;
             for (i, child) in node.children.iter().enumerate() {
                 if i > 0 {
@@ -738,6 +728,13 @@ fn format_node<'a>(node: &'a RPCNode, f: &mut fmt::Formatter<'_>) -> fmt::Result
     Ok(())
 }
 
+fn format_opt_value<'a>(value: Option<&'a RPCValue>, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    if let Some(value) = value {
+        format_value(value, f)
+    } else {
+        Ok(())
+    }
+}
 fn format_value<'a>(value: &'a RPCValue, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     use RPCValue::*;
     match value {
@@ -840,18 +837,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_convert_predicate_measurement() {
-        // _measurement = "foo"
+    /// Create a predicate like tag(tag_name) != 'value'
+    fn make_tagref_not_equal_predicate(tag_name: &[u8], value: impl Into<String>) -> RPCPredicate {
+        // tag_ref
         let field_ref = RPCNode {
             node_type: RPCNodeType::TagRef as i32,
             children: vec![],
-            value: Some(RPCValue::TagRefValue(TAG_KEY_MEASUREMENT.to_vec())),
+            value: Some(RPCValue::TagRefValue(tag_name.to_vec())),
         };
         let iconst = RPCNode {
             node_type: RPCNodeType::Literal as i32,
             children: vec![],
-            value: Some(RPCValue::StringValue("foo".into())),
+            value: Some(RPCValue::StringValue(value.into())),
         };
         let comparison = RPCNode {
             node_type: RPCNodeType::ComparisonExpression as i32,
@@ -859,9 +856,15 @@ mod tests {
             value: Some(RPCValue::Comparison(RPCComparison::NotEqual as i32)),
         };
 
-        let rpc_predicate = RPCPredicate {
+        RPCPredicate {
             root: Some(comparison),
-        };
+        }
+    }
+
+    #[test]
+    fn test_convert_predicate_measurement() {
+        // _measurement != "foo"
+        let rpc_predicate = make_tagref_not_equal_predicate(TAG_KEY_MEASUREMENT, "foo");
 
         let predicate = PredicateBuilder::default()
             .rpc_predicate(Some(rpc_predicate))
@@ -869,6 +872,25 @@ mod tests {
             .build();
 
         let expected_exprs = vec![col("_measurement").not_eq(lit("foo"))];
+
+        assert_eq!(
+            &expected_exprs, &predicate.exprs,
+            "expected '{:#?}' doesn't match actual '{:#?}'",
+            expected_exprs, predicate.exprs,
+        );
+    }
+
+    #[test]
+    fn test_convert_predicate_field() {
+        // _field != "bar"
+        let rpc_predicate = make_tagref_not_equal_predicate(TAG_KEY_FIELD, "bar");
+
+        let predicate = PredicateBuilder::default()
+            .rpc_predicate(Some(rpc_predicate))
+            .expect("successfully converting predicate")
+            .build();
+
+        let expected_exprs = vec![col("_field").not_eq(lit("bar"))];
 
         assert_eq!(
             &expected_exprs, &predicate.exprs,
@@ -1081,42 +1103,14 @@ mod tests {
         assert!(predicate.range.is_none());
     }
 
-    #[test]
-    fn test_convert_predicate_unsupported_structure() {
-        // Test (_f = "foo" and host > 5.0) OR (_m = "bar")
-        // which is not something we know how to do
-
-        let (comparison, _) = make_host_comparison();
-
-        let unsupported = make_or_node(
-            make_and_node(make_field_ref_node("foo"), comparison),
-            make_measurement_ref_node("bar"),
-        );
-
-        let rpc_predicate = RPCPredicate {
-            root: Some(unsupported),
-        };
-
-        let res = PredicateBuilder::default().rpc_predicate(Some(rpc_predicate));
-
-        let expected_error = "Internal error: found field tag reference in unexpected location";
-        let actual_error = res.unwrap_err().to_string();
-        assert!(
-            actual_error.contains(expected_error),
-            "expected '{}' not found in '{}'",
-            expected_error,
-            actual_error
-        );
-    }
-
     /// make a _f = 'field_name' type node
     fn make_field_ref_node(field_name: impl Into<String>) -> RPCNode {
-        make_tag_ref_node(&[255], field_name)
+        make_tag_ref_node(TAG_KEY_FIELD, field_name)
     }
 
     /// make a _m = 'measurement_name' type node
     fn make_measurement_ref_node(field_name: impl Into<String>) -> RPCNode {
-        make_tag_ref_node(&[0], field_name)
+        make_tag_ref_node(TAG_KEY_MEASUREMENT, field_name)
     }
 
     /// returns (RPCNode, and expected_expr for the "host > 5.0")
@@ -1501,6 +1495,37 @@ mod tests {
         let rpc_pred = Some(RPCPredicate { root: Some(node) });
         assert_eq!(
             "AND((TagRef:_m[0x00] == \"val1\"), (TagRef:tag2 == \"val2\"), (TagRef:_f[0xff] == \"val3\"))",
+            format!("{}", displayable_predicate(rpc_pred.as_ref()))
+        );
+    }
+
+    #[test]
+    fn test_displayable_predicate_paren_expression_1_arg() {
+        let paren = RPCNode {
+            node_type: RPCNodeType::ParenExpression as i32,
+            children: vec![make_tag_ref_node(b"foo", "val1")],
+            value: None,
+        };
+        let rpc_pred = Some(RPCPredicate { root: Some(paren) });
+        assert_eq!(
+            r#"((TagRef:foo == "val1"))"#,
+            format!("{}", displayable_predicate(rpc_pred.as_ref()))
+        );
+    }
+
+    #[test]
+    fn test_displayable_predicate_paren_expression_2_arg() {
+        let paren = RPCNode {
+            node_type: RPCNodeType::ParenExpression as i32,
+            children: vec![
+                make_tag_ref_node(b"foo", "val1"),
+                make_tag_ref_node(b"bar", "val2"),
+            ],
+            value: None,
+        };
+        let rpc_pred = Some(RPCPredicate { root: Some(paren) });
+        assert_eq!(
+            r#"((TagRef:foo == "val1"), (TagRef:bar == "val2"))"#,
             format!("{}", displayable_predicate(rpc_pred.as_ref()))
         );
     }

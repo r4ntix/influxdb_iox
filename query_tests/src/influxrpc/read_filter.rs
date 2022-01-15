@@ -150,7 +150,7 @@ async fn run_read_filter_test_case<D>(
 
         assert_eq!(
             expected_results, string_results,
-            "Error in  scenario '{}'\n\nexpected:\n{:#?}\n\nactual:\n{:#?}",
+            "Error in  scenario '{}'\n\nexpected:\n{:#?}\n\nactual:\n{:#?}\n\n",
             scenario_name, expected_results, string_results
         );
     }
@@ -172,6 +172,49 @@ async fn test_read_filter_data_no_pred() {
     "Series tags={_measurement=h2o, city=LA, state=CA, _field=temp}\n  FloatPoints timestamps: [200, 350], values: [90.0, 90.0]",
     "Series tags={_measurement=o2, city=Boston, state=MA, _field=reading}\n  FloatPoints timestamps: [100, 250], values: [50.0, 51.0]",
     "Series tags={_measurement=o2, city=Boston, state=MA, _field=temp}\n  FloatPoints timestamps: [100, 250], values: [50.4, 53.4]",
+    ];
+
+    run_read_filter_test_case(TwoMeasurementsMultiSeries {}, predicate, expected_results).await;
+}
+
+#[tokio::test]
+async fn test_read_filter_data_exclusive_predicate() {
+    let predicate = PredicateBuilder::new()
+        // should not return the 350 row as predicate is
+        // range.start <= ts < range.end
+        .timestamp_range(349, 350)
+        .build();
+
+    let expected_results = vec![];
+
+    run_read_filter_test_case(TwoMeasurementsMultiSeries {}, predicate, expected_results).await;
+}
+
+#[tokio::test]
+async fn test_read_filter_data_inclusive_predicate() {
+    let predicate = PredicateBuilder::new()
+        // should return  350 row!
+        .timestamp_range(350, 351)
+        .build();
+
+    let expected_results = vec![
+        "Series tags={_measurement=h2o, city=LA, state=CA, _field=temp}\n  FloatPoints timestamps: [350], values: [90.0]",
+    ];
+
+    run_read_filter_test_case(TwoMeasurementsMultiSeries {}, predicate, expected_results).await;
+}
+
+#[tokio::test]
+async fn test_read_filter_data_exact_predicate() {
+    let predicate = PredicateBuilder::new()
+        // should return  250 rows!
+        .timestamp_range(250, 251)
+        .build();
+
+    let expected_results = vec![
+        "Series tags={_measurement=h2o, city=Boston, state=MA, _field=temp}\n  FloatPoints timestamps: [250], values: [72.4]",
+        "Series tags={_measurement=o2, city=Boston, state=MA, _field=reading}\n  FloatPoints timestamps: [250], values: [51.0]",
+        "Series tags={_measurement=o2, city=Boston, state=MA, _field=temp}\n  FloatPoints timestamps: [250], values: [53.4]",
     ];
 
     run_read_filter_test_case(TwoMeasurementsMultiSeries {}, predicate, expected_results).await;
@@ -670,7 +713,7 @@ impl DbSetup for MeasurementsForDefect2845 {
 }
 
 #[tokio::test]
-async fn test_read_filter_filter_on_value_2845() {
+async fn test_read_filter_filter_on_value() {
     test_helpers::maybe_start_logging();
 
     let predicate = PredicateBuilder::default()
@@ -683,4 +726,69 @@ async fn test_read_filter_filter_on_value_2845() {
     ];
 
     run_read_filter_test_case(MeasurementsForDefect2845 {}, predicate, expected_results).await;
+}
+
+#[tokio::test]
+async fn test_read_filter_on_field() {
+    test_helpers::maybe_start_logging();
+
+    // Predicate should pick 'temp' field from h2o
+    // (_field = 'temp')
+    let p1 = col("_field").eq(lit("temp"));
+    let predicate = PredicateBuilder::default().add_expr(p1).build();
+
+    let expected_results = vec![
+        "Series tags={_measurement=h2o, city=Boston, state=MA, _field=temp}\n  FloatPoints timestamps: [50, 100000], values: [70.4, 70.4]",
+        "Series tags={_measurement=o2, state=CA, _field=temp}\n  FloatPoints timestamps: [300], values: [79.0]",
+        "Series tags={_measurement=o2, city=Boston, state=MA, _field=temp}\n  FloatPoints timestamps: [50], values: [53.4]",
+    ];
+
+    run_read_filter_test_case(TwoMeasurementsManyFields {}, predicate, expected_results).await;
+}
+
+#[tokio::test]
+async fn test_read_filter_on_field_single_measurement() {
+    test_helpers::maybe_start_logging();
+
+    // Predicate should pick 'temp' field from h2o
+    // (_field = 'temp' AND _measurement = 'h2o')
+    let p1 = col("_field")
+        .eq(lit("temp"))
+        .and(col("_measurement").eq(lit("h2o")));
+    let predicate = PredicateBuilder::default().add_expr(p1).build();
+
+    let expected_results = vec![
+        "Series tags={_measurement=h2o, city=Boston, state=MA, _field=temp}\n  FloatPoints timestamps: [50, 100000], values: [70.4, 70.4]",
+    ];
+
+    run_read_filter_test_case(TwoMeasurementsManyFields {}, predicate, expected_results).await;
+}
+
+#[tokio::test]
+async fn test_read_filter_on_field_multi_measurement() {
+    test_helpers::maybe_start_logging();
+
+    // Predicate should pick 'temp' field from h2o and 'other_temp' from o2
+    //
+    // (_field = 'other_temp' AND _measurement = 'h2o') OR (_field = 'temp' AND _measurement = 'o2')
+    let p1 = col("_field")
+        .eq(lit("other_temp"))
+        .and(col("_measurement").eq(lit("h2o")));
+    let p2 = col("_field")
+        .eq(lit("temp"))
+        .and(col("_measurement").eq(lit("o2")));
+    let predicate = PredicateBuilder::default().add_expr(p1.or(p2)).build();
+
+    // SHOULD NOT contain temp from h2o
+    let expected_results = vec![
+        "Series tags={_measurement=h2o, city=Boston, state=CA, _field=other_temp}\n  FloatPoints timestamps: [350], values: [72.4]",
+        "Series tags={_measurement=h2o, city=Boston, state=MA, _field=other_temp}\n  FloatPoints timestamps: [250], values: [70.4]",
+        // This series should not be here (_field = temp)
+        // WRONG ANSWER, tracked by: https://github.com/influxdata/influxdb_iox/issues/3428
+        "Series tags={_measurement=h2o, city=Boston, state=MA, _field=temp}\n  FloatPoints timestamps: [50, 100000], values: [70.4, 70.4]",
+        "Series tags={_measurement=o2, state=CA, _field=temp}\n  FloatPoints timestamps: [300], values: [79.0]",
+        "Series tags={_measurement=o2, city=Boston, state=MA, _field=temp}\n  FloatPoints timestamps: [50], values: [53.4]",
+    ];
+
+    run_read_filter_test_case(TwoMeasurementsManyFields {}, predicate, expected_results).await;
 }

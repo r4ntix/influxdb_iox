@@ -43,6 +43,7 @@ members = [
     "query_log_replay",
     "read_buffer",
     "router",
+    "router2",
     "schema",
     "server",
     "server_benchmarks",

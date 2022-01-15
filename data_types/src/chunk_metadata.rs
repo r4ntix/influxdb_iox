@@ -266,7 +266,9 @@ impl TryFrom<Bytes> for ChunkId {
     type Error = ChunkIdConversionError;
 
     fn try_from(value: Bytes) -> Result<Self, Self::Error> {
-        Ok(Self(Uuid::from_slice(&value).context(CannotConvertBytes)?))
+        Ok(Self(
+            Uuid::from_slice(&value).context(CannotConvertBytesSnafu)?,
+        ))
     }
 }
 
@@ -282,7 +284,7 @@ impl FromStr for ChunkId {
     type Err = ChunkIdConversionError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let uuid = Uuid::parse_str(s).context(CannotConvertUUIDText)?;
+        let uuid = Uuid::parse_str(s).context(CannotConvertUUIDTextSnafu)?;
         Ok(Self::from(uuid))
     }
 }
@@ -348,14 +350,8 @@ mod tests {
         // Random chunk IDs use UUID-format
         let id_random = ChunkId::new();
         let inner: Uuid = id_random.get();
-        assert_eq!(
-            format!("{:?}", id_random),
-            format!("ChunkId({})", inner.to_string())
-        );
-        assert_eq!(
-            format!("{}", id_random),
-            format!("ChunkId({})", inner.to_string())
-        );
+        assert_eq!(format!("{:?}", id_random), format!("ChunkId({})", inner));
+        assert_eq!(format!("{}", id_random), format!("ChunkId({})", inner));
 
         // Deterministic IDs use integer format
         let id_test = ChunkId::new_test(42);

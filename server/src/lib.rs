@@ -76,7 +76,12 @@ use data_types::{
     server_id::ServerId,
     {DatabaseName, DatabaseNameError},
 };
-use database::{Database, DatabaseConfig};
+use database::{
+    init::{claim_database_in_object_store, create_empty_db_in_object_store},
+    state::DatabaseConfig,
+    Database,
+};
+
 use db::Db;
 use futures::future::{BoxFuture, Future, FutureExt, Shared, TryFutureExt};
 use generated_types::{google::FieldViolation, influxdata::iox::management};
@@ -126,7 +131,9 @@ pub enum Error {
     },
 
     #[snafu(display("cannot create database: {}", source))]
-    CannotCreateDatabase { source: crate::database::InitError },
+    CannotCreateDatabase {
+        source: crate::database::init::InitError,
+    },
 
     #[snafu(display("database not found: {}", db_name))]
     DatabaseNotFound { db_name: String },
@@ -141,7 +148,9 @@ pub enum Error {
     CannotReleaseDatabase { source: crate::database::Error },
 
     #[snafu(display("{}", source))]
-    CannotClaimDatabase { source: crate::database::InitError },
+    CannotClaimDatabase {
+        source: crate::database::init::InitError,
+    },
 
     #[snafu(display("A database with the name `{}` already exists", db_name))]
     DatabaseAlreadyExists { db_name: String },
@@ -186,7 +195,9 @@ pub enum Error {
     },
 
     #[snafu(display("database failed to initialize: {}", source))]
-    DatabaseInit { source: Arc<database::InitError> },
+    DatabaseInit {
+        source: Arc<database::init::InitError>,
+    },
 
     #[snafu(display("error persisting server config to object storage: {}", source))]
     PersistServerConfig { source: object_store::Error },
@@ -363,20 +374,20 @@ impl ServerStateInitialized {
             ))),
             hashbrown::hash_map::Entry::Occupied(mut existing) => {
                 if let Some(init_error) = existing.get().init_error() {
-                    if matches!(&*init_error, database::InitError::NoActiveDatabase) {
+                    if matches!(&*init_error, database::init::InitError::NoActiveDatabase) {
                         existing.insert(Arc::new(Database::new(
                             Arc::clone(&shared.application),
                             config,
                         )));
                         existing.into_mut()
                     } else {
-                        return DatabaseAlreadyExists {
+                        return DatabaseAlreadyExistsSnafu {
                             db_name: config.name,
                         }
                         .fail();
                     }
                 } else {
-                    return DatabaseAlreadyExists {
+                    return DatabaseAlreadyExistsSnafu {
                         db_name: config.name,
                     }
                     .fail();
@@ -554,7 +565,7 @@ impl Server {
         let db = initialized
             .databases
             .get(db_name)
-            .context(DatabaseNotFound { db_name })?;
+            .context(DatabaseNotFoundSnafu { db_name })?;
 
         Ok(Arc::clone(db))
     }
@@ -562,7 +573,7 @@ impl Server {
     /// Returns an active `Database` by name
     pub fn active_database(&self, db_name: &DatabaseName<'_>) -> Result<Arc<Database>> {
         let database = self.database(db_name)?;
-        ensure!(database.is_active(), DatabaseNotFound { db_name });
+        ensure!(database.is_active(), DatabaseNotFoundSnafu { db_name });
         Ok(database)
     }
 
@@ -572,7 +583,7 @@ impl Server {
 
         database
             .initialized_db()
-            .context(DatabaseNotInitialized { db_name })
+            .context(DatabaseNotInitializedSnafu { db_name })
     }
 
     /// Tells the server the set of rules for a database.
@@ -594,16 +605,21 @@ impl Server {
 
             ensure!(
                 !initialized.databases.contains_key(&db_name),
-                DatabaseAlreadyExists { db_name }
+                DatabaseAlreadyExistsSnafu { db_name }
             );
 
             initialized.server_id
         };
 
-        let res =
-            Database::create(Arc::clone(&self.shared.application), uuid, rules, server_id).await;
+        let res = create_empty_db_in_object_store(
+            Arc::clone(&self.shared.application),
+            uuid,
+            rules,
+            server_id,
+        )
+        .await;
 
-        let location = res.context(CannotCreateDatabase)?;
+        let location = res.context(CannotCreateDatabaseSnafu)?;
 
         let database = {
             let mut state = self.shared.state.write();
@@ -632,7 +648,7 @@ impl Server {
         // Save the database to the server config as soon as it's added to the `ServerState`
         self.persist_server_config().await?;
 
-        database.wait_for_init().await.context(DatabaseInit)?;
+        database.wait_for_init().await.context(DatabaseInitSnafu)?;
 
         Ok(database)
     }
@@ -656,7 +672,7 @@ impl Server {
         // If a UUID has been specified, it has to match this database's UUID
         // Should this check be here or in database.release?
         if matches!(uuid, Some(specified) if specified != current) {
-            return UuidMismatch {
+            return UuidMismatchSnafu {
                 db_name: db_name.to_string(),
                 specified: uuid.unwrap(),
                 current,
@@ -664,7 +680,10 @@ impl Server {
             .fail();
         }
 
-        let returned_uuid = database.release().await.context(CannotReleaseDatabase)?;
+        let returned_uuid = database
+            .release()
+            .await
+            .context(CannotReleaseDatabaseSnafu)?;
         database.shutdown();
         let _ = database
             .join()
@@ -725,15 +744,15 @@ impl Server {
         // Check that this name is unique among currently active databases
         if let Ok(existing_db) = self.database(&db_name) {
             if matches!(existing_db.uuid(), Some(existing_uuid) if existing_uuid == uuid) {
-                return DatabaseAlreadyOwnedByThisServer { uuid }.fail();
+                return DatabaseAlreadyOwnedByThisServerSnafu { uuid }.fail();
             } else {
-                return DatabaseAlreadyExists { db_name }.fail();
+                return DatabaseAlreadyExistsSnafu { db_name }.fail();
             }
         }
 
         // Mark the database as claimed in object storage and get its location for the server
         // config file
-        let location = Database::claim(
+        let location = claim_database_in_object_store(
             Arc::clone(&self.shared.application),
             &db_name,
             uuid,
@@ -741,7 +760,7 @@ impl Server {
             force,
         )
         .await
-        .context(CannotClaimDatabase)?;
+        .context(CannotClaimDatabaseSnafu)?;
 
         let database = {
             let mut state = self.shared.state.write();
@@ -770,7 +789,7 @@ impl Server {
         // Save the database to the server config as soon as it's added to the `ServerState`
         self.persist_server_config().await?;
 
-        database.wait_for_init().await.context(DatabaseInit)?;
+        database.wait_for_init().await.context(DatabaseInitSnafu)?;
 
         Ok(db_name)
     }
@@ -789,7 +808,7 @@ impl Server {
             bytes,
         )
         .await
-        .context(PersistServerConfig)?;
+        .context(PersistServerConfigSnafu)?;
 
         Ok(())
     }
@@ -806,7 +825,7 @@ impl Server {
         Ok(database
             .update_provided_rules(rules)
             .await
-            .context(CanNotUpdateRules { db_name })?)
+            .context(CanNotUpdateRulesSnafu { db_name })?)
     }
 
     /// Closes a chunk and starts moving its data to the read buffer, as a
@@ -824,7 +843,7 @@ impl Server {
 
         let partition = db
             .lockable_partition(&table_name, &partition_key)
-            .context(PartitionNotFound)?;
+            .context(PartitionNotFoundSnafu)?;
 
         let partition = partition.read();
         let chunk =
@@ -855,7 +874,7 @@ impl Server {
         self.database(db_name)?
             .wipe_preserved_catalog()
             .await
-            .context(WipePreservedCatalog)
+            .context(WipePreservedCatalogSnafu)
     }
 }
 
@@ -1055,7 +1074,7 @@ impl DatabaseStore for Server {
     // TODO: refactor usages of this to use the Server rather than this trait and to
     //       explicitly create a database.
     async fn db_or_create(&self, name: &str) -> Result<Arc<Self::Database>, Self::Error> {
-        let db_name = DatabaseName::new(name.to_string()).context(InvalidDatabaseName)?;
+        let db_name = DatabaseName::new(name.to_string()).context(InvalidDatabaseNameSnafu)?;
 
         let db = match self.db(&db_name) {
             Ok(db) => db,
@@ -1099,9 +1118,9 @@ pub enum DatabaseNameFromRulesError {
     #[snafu(display(
         "database rules for UUID {} not found at expected location `{}`",
         uuid,
-        location
+        path
     ))]
-    DatabaseRulesNotFound { uuid: Uuid, location: String },
+    DatabaseRulesNotFound { uuid: Uuid, path: String },
 
     #[snafu(display("error loading rules from object storage: {} ({:?})", source, source))]
     CannotLoadRules { source: object_store::Error },
@@ -1122,17 +1141,17 @@ async fn database_name_from_rules_file(
     let rules_bytes = IoxObjectStore::load_database_rules(object_store, uuid)
         .await
         .map_err(|e| match e {
-            object_store::Error::NotFound { location, .. } => {
-                DatabaseNameFromRulesError::DatabaseRulesNotFound { uuid, location }
+            object_store::Error::NotFound { path, .. } => {
+                DatabaseNameFromRulesError::DatabaseRulesNotFound { uuid, path }
             }
             other => DatabaseNameFromRulesError::CannotLoadRules { source: other },
         })?;
 
     let rules: PersistedDatabaseRules =
         generated_types::database_rules::decode_persisted_database_rules(rules_bytes)
-            .context(CannotDeserializeRules)?
+            .context(CannotDeserializeRulesSnafu)?
             .try_into()
-            .context(ConvertingRules)?;
+            .context(ConvertingRulesSnafu)?;
 
     Ok(rules.db_name().to_owned())
 }
@@ -1711,7 +1730,7 @@ mod tests {
         db.store_write(&write).unwrap();
 
         // get chunk ID
-        let chunks = db.chunk_summaries().unwrap();
+        let chunks = db.chunk_summaries();
         assert_eq!(chunks.len(), 1);
         let chunk_id = chunks[0].id;
 
@@ -1745,7 +1764,7 @@ mod tests {
         let db_name = DatabaseName::new("foo").unwrap();
         let db = server.db(&db_name).unwrap();
 
-        let chunk_summaries = db.chunk_summaries().unwrap();
+        let chunk_summaries = db.chunk_summaries();
         assert_eq!(chunk_summaries.len(), 1);
         assert_eq!(chunk_summaries[0].storage, ChunkStorage::ReadBuffer);
     }
@@ -2126,7 +2145,7 @@ mod tests {
         assert_error!(
             server2.claim_database(db_uuid, false).await,
             Error::CannotClaimDatabase {
-                source: database::InitError::CantClaimDatabaseCurrentlyOwned { server_id, .. }
+                source: database::init::InitError::CantClaimDatabaseCurrentlyOwned { server_id, .. }
             } if server_id == server1.server_id().unwrap().get_u32()
         );
 
@@ -2152,7 +2171,7 @@ mod tests {
         assert_error!(
             server2.claim_database(db_uuid, false).await,
             Error::CannotClaimDatabase {
-                source: database::InitError::CantClaimDatabaseCurrentlyOwned { server_id, .. }
+                source: database::init::InitError::CantClaimDatabaseCurrentlyOwned { server_id, .. }
             } if server_id == server1.server_id().unwrap().get_u32()
         );
 
@@ -2252,7 +2271,7 @@ mod tests {
                 let err = database.wait_for_init().await.unwrap_err();
                 assert!(matches!(
                     err.as_ref(),
-                    database::InitError::CatalogLoad { .. }
+                    database::init::InitError::CatalogLoad { .. }
                 ))
             } else if name == &db_name_rules_broken {
                 let err = database.wait_for_init().await.unwrap_err();
@@ -2269,8 +2288,8 @@ mod tests {
                 .await
                 .unwrap_err()
                 .to_string(),
-            "error wiping preserved catalog: database (db_existing) in invalid state (Initialized) \
-            for transition (WipePreservedCatalog)"
+             "error wiping preserved catalog: database (db_existing) in invalid state (Initialized) \
+              for wiping preserved catalog. Expected CatalogLoadError, WriteBufferCreationError, ReplayError"
         );
         assert!(
             PreservedCatalog::exists(&existing.iox_object_store().unwrap())
@@ -2318,8 +2337,8 @@ mod tests {
                 .await
                 .unwrap_err()
                 .to_string(),
-            "error wiping preserved catalog: database (db_broken_rules) in invalid state \
-            (RulesLoadError) for transition (WipePreservedCatalog)"
+            "error wiping preserved catalog: database (db_broken_rules) in invalid state (RulesLoadError) \
+             for wiping preserved catalog. Expected CatalogLoadError, WriteBufferCreationError, ReplayError"
         );
 
         // 4. wipe DB with broken catalog, this will bring the DB back to life
@@ -2365,7 +2384,7 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "error wiping preserved catalog: database (db_created) in invalid state (Initialized) \
-            for transition (WipePreservedCatalog)"
+             for wiping preserved catalog. Expected CatalogLoadError, WriteBufferCreationError, ReplayError"
         );
         assert!(
             PreservedCatalog::exists(&created.iox_object_store().unwrap())

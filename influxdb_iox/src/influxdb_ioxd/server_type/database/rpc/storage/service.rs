@@ -244,10 +244,10 @@ where
         let db = self
             .db_store
             .db(&db_name)
-            .context(DatabaseNotFound { db_name: &db_name })?;
-        db.record_query("read_filter", defer_json(&req));
+            .context(DatabaseNotFoundSnafu { db_name: &db_name })?;
+        let _query_completed_token = db.record_query("read_filter", defer_json(&req));
 
-        let results = read_filter_impl(db, db_name, req, span_ctx)
+        let results = read_filter_impl(Arc::clone(&db), db_name, req, span_ctx)
             .await?
             .into_iter()
             .map(Ok)
@@ -269,8 +269,8 @@ where
         let db = self
             .db_store
             .db(&db_name)
-            .context(DatabaseNotFound { db_name: &db_name })?;
-        db.record_query("read_group", defer_json(&req));
+            .context(DatabaseNotFoundSnafu { db_name: &db_name })?;
+        let _query_completed_token = db.record_query("read_group", defer_json(&req));
 
         let ReadGroupRequest {
             read_source: _read_source,
@@ -288,19 +288,26 @@ where
             aggregate, group, group_keys
         );
 
-        let group = expr::convert_group_type(group).context(ConvertingReadGroupType {
+        let group = expr::convert_group_type(group).context(ConvertingReadGroupTypeSnafu {
             aggregate_string: &aggregate_string,
         })?;
 
         let gby_agg = expr::make_read_group_aggregate(aggregate, group, group_keys)
-            .context(ConvertingReadGroupAggregate { aggregate_string })?;
+            .context(ConvertingReadGroupAggregateSnafu { aggregate_string })?;
 
-        let results = query_group_impl(db, db_name, range, predicate, gby_agg, span_ctx)
-            .await
-            .map_err(|e| e.to_status())?
-            .into_iter()
-            .map(Ok)
-            .collect::<Vec<_>>();
+        let results = query_group_impl(
+            Arc::clone(&db),
+            db_name,
+            range,
+            predicate,
+            gby_agg,
+            span_ctx,
+        )
+        .await
+        .map_err(|e| e.to_status())?
+        .into_iter()
+        .map(Ok)
+        .collect::<Vec<_>>();
 
         Ok(tonic::Response::new(futures::stream::iter(results)))
     }
@@ -319,8 +326,8 @@ where
         let db = self
             .db_store
             .db(&db_name)
-            .context(DatabaseNotFound { db_name: &db_name })?;
-        db.record_query("read_window_aggregate", defer_json(&req));
+            .context(DatabaseNotFoundSnafu { db_name: &db_name })?;
+        let _query_completed_token = db.record_query("read_window_aggregate", defer_json(&req));
 
         let ReadWindowAggregateRequest {
             read_source: _read_source,
@@ -340,14 +347,21 @@ where
         );
 
         let gby_agg = expr::make_read_window_aggregate(aggregate, window_every, offset, window)
-            .context(ConvertingWindowAggregate { aggregate_string })?;
+            .context(ConvertingWindowAggregateSnafu { aggregate_string })?;
 
-        let results = query_group_impl(db, db_name, range, predicate, gby_agg, span_ctx)
-            .await
-            .map_err(|e| e.to_status())?
-            .into_iter()
-            .map(Ok)
-            .collect::<Vec<_>>();
+        let results = query_group_impl(
+            Arc::clone(&db),
+            db_name,
+            range,
+            predicate,
+            gby_agg,
+            span_ctx,
+        )
+        .await
+        .map_err(|e| e.to_status())?
+        .into_iter()
+        .map(Ok)
+        .collect::<Vec<_>>();
 
         Ok(tonic::Response::new(futures::stream::iter(results)))
     }
@@ -367,8 +381,8 @@ where
         let db = self
             .db_store
             .db(&db_name)
-            .context(DatabaseNotFound { db_name: &db_name })?;
-        db.record_query("tag_keys", defer_json(&req));
+            .context(DatabaseNotFoundSnafu { db_name: &db_name })?;
+        let _query_completed_token = db.record_query("tag_keys", defer_json(&req));
 
         let TagKeysRequest {
             tags_source: _tag_source,
@@ -380,9 +394,16 @@ where
 
         let measurement = None;
 
-        let response = tag_keys_impl(db, db_name, measurement, range, predicate, span_ctx)
-            .await
-            .map_err(|e| e.to_status());
+        let response = tag_keys_impl(
+            Arc::clone(&db),
+            db_name,
+            measurement,
+            range,
+            predicate,
+            span_ctx,
+        )
+        .await
+        .map_err(|e| e.to_status());
 
         tx.send(response)
             .await
@@ -406,8 +427,8 @@ where
         let db = self
             .db_store
             .db(&db_name)
-            .context(DatabaseNotFound { db_name: &db_name })?;
-        db.record_query("tag_values", defer_json(&req));
+            .context(DatabaseNotFoundSnafu { db_name: &db_name })?;
+        let _query_completed_token = db.record_query("tag_values", defer_json(&req));
 
         let TagValuesRequest {
             tags_source: _tag_source,
@@ -430,11 +451,13 @@ where
                 .to_status());
             }
 
-            measurement_name_impl(db, db_name, range, predicate, span_ctx).await
+            measurement_name_impl(Arc::clone(&db), db_name, range, predicate, span_ctx).await
         } else if tag_key.is_field() {
             info!(%db_name, ?range, predicate=%predicate.loggable(), "tag_values with tag_key=[xff] (field name)");
 
-            let fieldlist = field_names_impl(db, db_name, None, range, predicate, span_ctx).await?;
+            let fieldlist =
+                field_names_impl(Arc::clone(&db), db_name, None, range, predicate, span_ctx)
+                    .await?;
 
             // Pick out the field names into a Vec<Vec<u8>>for return
             let values = fieldlist
@@ -445,12 +468,12 @@ where
 
             Ok(StringValuesResponse { values })
         } else {
-            let tag_key = String::from_utf8(tag_key).context(ConvertingTagKeyInTagValues)?;
+            let tag_key = String::from_utf8(tag_key).context(ConvertingTagKeyInTagValuesSnafu)?;
 
             info!(%db_name, ?range, %tag_key, predicate=%predicate.loggable(), "tag_values",);
 
             tag_values_impl(
-                db,
+                Arc::clone(&db),
                 db_name,
                 tag_key,
                 measurement,
@@ -485,21 +508,25 @@ where
         let db = self
             .db_store
             .db(&db_name)
-            .context(DatabaseNotFound { db_name: &db_name })?;
-        db.record_query(
+            .context(DatabaseNotFoundSnafu { db_name: &db_name })?;
+        let _query_completed_token = db.record_query(
             "tag_values_grouped_by_measurement_and_tag_key",
             defer_json(&req),
         );
 
         info!(%db_name, ?req.measurement_patterns, ?req.tag_key_predicate, predicate=%req.condition.loggable(), "tag_values_grouped_by_measurement_and_tag_key");
 
-        let results =
-            tag_values_grouped_by_measurement_and_tag_key_impl(db, db_name, req, span_ctx)
-                .await
-                .map_err(|e| e.to_status())?
-                .into_iter()
-                .map(Ok)
-                .collect::<Vec<_>>();
+        let results = tag_values_grouped_by_measurement_and_tag_key_impl(
+            Arc::clone(&db),
+            db_name,
+            req,
+            span_ctx,
+        )
+        .await
+        .map_err(|e| e.to_status())?
+        .into_iter()
+        .map(Ok)
+        .collect::<Vec<_>>();
 
         Ok(tonic::Response::new(futures::stream::iter(results)))
     }
@@ -564,8 +591,8 @@ where
         let db = self
             .db_store
             .db(&db_name)
-            .context(DatabaseNotFound { db_name: &db_name })?;
-        db.record_query("measurement_names", defer_json(&req));
+            .context(DatabaseNotFoundSnafu { db_name: &db_name })?;
+        let _query_completed_token = db.record_query("measurement_names", defer_json(&req));
 
         let MeasurementNamesRequest {
             source: _source,
@@ -575,7 +602,7 @@ where
 
         info!(%db_name, ?range, predicate=%predicate.loggable(), "measurement_names");
 
-        let response = measurement_name_impl(db, db_name, range, predicate, span_ctx)
+        let response = measurement_name_impl(Arc::clone(&db), db_name, range, predicate, span_ctx)
             .await
             .map_err(|e| e.to_status());
 
@@ -601,8 +628,8 @@ where
         let db = self
             .db_store
             .db(&db_name)
-            .context(DatabaseNotFound { db_name: &db_name })?;
-        db.record_query("measurement_tag_keys", defer_json(&req));
+            .context(DatabaseNotFoundSnafu { db_name: &db_name })?;
+        let _query_completed_token = db.record_query("measurement_tag_keys", defer_json(&req));
 
         let MeasurementTagKeysRequest {
             source: _source,
@@ -615,9 +642,16 @@ where
 
         let measurement = Some(measurement);
 
-        let response = tag_keys_impl(db, db_name, measurement, range, predicate, span_ctx)
-            .await
-            .map_err(|e| e.to_status());
+        let response = tag_keys_impl(
+            Arc::clone(&db),
+            db_name,
+            measurement,
+            range,
+            predicate,
+            span_ctx,
+        )
+        .await
+        .map_err(|e| e.to_status());
 
         tx.send(response)
             .await
@@ -641,8 +675,8 @@ where
         let db = self
             .db_store
             .db(&db_name)
-            .context(DatabaseNotFound { db_name: &db_name })?;
-        db.record_query("measurement_tag_values", defer_json(&req));
+            .context(DatabaseNotFoundSnafu { db_name: &db_name })?;
+        let _query_completed_token = db.record_query("measurement_tag_values", defer_json(&req));
 
         let MeasurementTagValuesRequest {
             source: _source,
@@ -657,7 +691,7 @@ where
         let measurement = Some(measurement);
 
         let response = tag_values_impl(
-            db,
+            Arc::clone(&db),
             db_name,
             tag_key,
             measurement,
@@ -690,8 +724,8 @@ where
         let db = self
             .db_store
             .db(&db_name)
-            .context(DatabaseNotFound { db_name: &db_name })?;
-        db.record_query("measurement_fields", defer_json(&req));
+            .context(DatabaseNotFoundSnafu { db_name: &db_name })?;
+        let _query_completed_token = db.record_query("measurement_fields", defer_json(&req));
 
         let MeasurementFieldsRequest {
             source: _source,
@@ -704,14 +738,21 @@ where
 
         let measurement = Some(measurement);
 
-        let response = field_names_impl(db, db_name, measurement, range, predicate, span_ctx)
-            .await
-            .map(|fieldlist| {
-                fieldlist_to_measurement_fields_response(fieldlist)
-                    .context(ConvertingFieldList)
-                    .map_err(|e| e.to_status())
-            })
-            .map_err(|e| e.to_status())?;
+        let response = field_names_impl(
+            Arc::clone(&db),
+            db_name,
+            measurement,
+            range,
+            predicate,
+            span_ctx,
+        )
+        .await
+        .map(|fieldlist| {
+            fieldlist_to_measurement_fields_response(fieldlist)
+                .context(ConvertingFieldListSnafu)
+                .map_err(|e| e.to_status())
+        })
+        .map_err(|e| e.to_status())?;
 
         tx.send(response)
             .await
@@ -775,7 +816,7 @@ where
     let predicate = PredicateBuilder::default()
         .set_range(range)
         .rpc_predicate(rpc_predicate)
-        .context(ConvertingPredicate {
+        .context(ConvertingPredicateSnafu {
             rpc_predicate_string,
         })?
         .build();
@@ -786,13 +827,13 @@ where
         .table_names(db, predicate)
         .await
         .map_err(|e| Box::new(e) as _)
-        .context(ListingTables { db_name })?;
+        .context(ListingTablesSnafu { db_name })?;
 
     let table_names = ctx
         .to_string_set(plan)
         .await
         .map_err(|e| Box::new(e) as _)
-        .context(ListingTables { db_name })?;
+        .context(ListingTablesSnafu { db_name })?;
 
     // Map the resulting collection of Strings into a Vec<Vec<u8>>for return
     let values: Vec<Vec<u8>> = table_names
@@ -824,7 +865,7 @@ where
         .set_range(range)
         .table_option(measurement)
         .rpc_predicate(rpc_predicate)
-        .context(ConvertingPredicate {
+        .context(ConvertingPredicateSnafu {
             rpc_predicate_string,
         })?
         .build();
@@ -835,13 +876,13 @@ where
         .tag_keys(db, predicate)
         .await
         .map_err(|e| Box::new(e) as _)
-        .context(ListingColumns { db_name })?;
+        .context(ListingColumnsSnafu { db_name })?;
 
     let tag_keys = ctx
         .to_string_set(tag_key_plan)
         .await
         .map_err(|e| Box::new(e) as _)
-        .context(ListingColumns { db_name })?;
+        .context(ListingColumnsSnafu { db_name })?;
 
     // Map the resulting collection of Strings into a Vec<Vec<u8>>for return
     let values = tag_keys_to_byte_vecs(tag_keys);
@@ -870,7 +911,7 @@ where
         .set_range(range)
         .table_option(measurement)
         .rpc_predicate(rpc_predicate)
-        .context(ConvertingPredicate {
+        .context(ConvertingPredicateSnafu {
             rpc_predicate_string,
         })?
         .build();
@@ -884,13 +925,13 @@ where
         .tag_values(db, tag_name, predicate)
         .await
         .map_err(|e| Box::new(e) as _)
-        .context(ListingTagValues { db_name, tag_name })?;
+        .context(ListingTagValuesSnafu { db_name, tag_name })?;
 
     let tag_values = ctx
         .to_string_set(tag_value_plan)
         .await
         .map_err(|e| Box::new(e) as _)
-        .context(ListingTagValues { db_name, tag_name })?;
+        .context(ListingTagValuesSnafu { db_name, tag_name })?;
 
     // Map the resulting collection of Strings into a Vec<Vec<u8>>for return
     let values: Vec<Vec<u8>> = tag_values
@@ -918,9 +959,9 @@ where
     // for more details.
     let tag_key_pred = req
         .tag_key_predicate
-        .context(MissingTagKeyPredicate {})?
+        .context(MissingTagKeyPredicateSnafu {})?
         .value
-        .context(MissingTagKeyPredicate {})?;
+        .context(MissingTagKeyPredicateSnafu {})?;
 
     // Because we need to return tag values grouped by measurements and tag
     // keys we will materialise the measurements up front, so we can build up
@@ -996,7 +1037,7 @@ where
     let predicate = PredicateBuilder::default()
         .set_range(req.range)
         .rpc_predicate(req.predicate)
-        .context(ConvertingPredicate {
+        .context(ConvertingPredicateSnafu {
             rpc_predicate_string,
         })?
         .build();
@@ -1010,14 +1051,14 @@ where
         .read_filter(db, predicate)
         .await
         .map_err(|e| Box::new(e) as _)
-        .context(PlanningFilteringSeries { db_name })?;
+        .context(PlanningFilteringSeriesSnafu { db_name })?;
 
     // Execute the plans.
     let series_or_groups = ctx
         .to_series_and_groups(series_plan)
         .await
         .map_err(|e| Box::new(e) as _)
-        .context(FilteringSeries { db_name })
+        .context(FilteringSeriesSnafu { db_name })
         .log_if_error("Running series set plan")?;
 
     let emit_tag_keys_binary_format = req.tag_key_meta_names == TagKeyMetaNames::Binary as i32;
@@ -1046,7 +1087,7 @@ where
     let predicate = PredicateBuilder::default()
         .set_range(range)
         .rpc_predicate(rpc_predicate)
-        .context(ConvertingPredicate {
+        .context(ConvertingPredicateSnafu {
             rpc_predicate_string,
         })?
         .build();
@@ -1064,7 +1105,7 @@ where
     };
     let grouped_series_set_plan = grouped_series_set_plan
         .map_err(|e| Box::new(e) as _)
-        .context(PlanningGroupSeries { db_name })?;
+        .context(PlanningGroupSeriesSnafu { db_name })?;
 
     // PERF - This used to send responses to the client before execution had
     // completed, but now it doesn't. We may need to revisit this in the future
@@ -1075,7 +1116,7 @@ where
         .to_series_and_groups(grouped_series_set_plan)
         .await
         .map_err(|e| Box::new(e) as _)
-        .context(GroupingSeries { db_name })
+        .context(GroupingSeriesSnafu { db_name })
         .log_if_error("Running Grouped SeriesSet Plan")?;
 
     // ReadGroupRequest does not have a field to control the format of
@@ -1104,7 +1145,7 @@ where
         .set_range(range)
         .table_option(measurement)
         .rpc_predicate(rpc_predicate)
-        .context(ConvertingPredicate {
+        .context(ConvertingPredicateSnafu {
             rpc_predicate_string,
         })?
         .build();
@@ -1116,13 +1157,13 @@ where
         .field_columns(db, predicate)
         .await
         .map_err(|e| Box::new(e) as _)
-        .context(ListingFields { db_name })?;
+        .context(ListingFieldsSnafu { db_name })?;
 
     let field_list = ctx
         .to_field_list(field_list_plan)
         .await
         .map_err(|e| Box::new(e) as _)
-        .context(ListingFields { db_name })?;
+        .context(ListingFieldsSnafu { db_name })?;
 
     trace!(field_names=?field_list, "Field names response");
     Ok(field_list)
@@ -1205,7 +1246,7 @@ where
                     }
                 }
             },
-            None => return MeasurementLiteralOrRegex { pred: expr }.fail(),
+            None => return MeasurementLiteralOrRegexSnafu { pred: expr }.fail(),
         }
     }
     Ok(names)
@@ -1262,11 +1303,11 @@ where
     match tag_key_predicate {
         Value::Neq(value) => tag_keys.retain(|elem| elem != &value),
         Value::EqRegex(pattern) => {
-            let re = regex::Regex::new(&pattern).context(InvalidTagKeyRegex)?;
+            let re = regex::Regex::new(&pattern).context(InvalidTagKeyRegexSnafu)?;
             tag_keys.retain(|elem| re.is_match(elem));
         }
         Value::NeqRegex(pattern) => {
-            let re = regex::Regex::new(&pattern).context(InvalidTagKeyRegex)?;
+            let re = regex::Regex::new(&pattern).context(InvalidTagKeyRegexSnafu)?;
             tag_keys.retain(|elem| !re.is_match(elem));
         }
         x => unreachable!("predicate should have been handled already {:?}", x),
@@ -2818,7 +2859,7 @@ mod tests {
             let bind_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0);
             let socket = tokio::net::TcpListener::bind(bind_addr)
                 .await
-                .context(Bind)?;
+                .context(BindSnafu)?;
 
             // Pull the assigned port out of the socket
             let bind_addr = socket.local_addr().unwrap();
