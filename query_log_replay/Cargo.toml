@@ -7,7 +7,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-arrow = { version = "6.0", features = ["prettyprint"] }
+arrow = { version = "7.0", features = ["prettyprint"] }
 bytes = "1.0"
 clap = "2.34.0"
 futures = "0.3"
