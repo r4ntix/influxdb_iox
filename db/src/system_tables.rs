@@ -166,7 +166,6 @@ where
     async fn scan(
         &self,
         projection: &Option<Vec<usize>>,
-        _batch_size: usize,
         // It would be cool to push projection and limit down
         _filters: &[datafusion::logical_plan::Expr],
         _limit: Option<usize>,
@@ -220,6 +219,7 @@ mod tests {
     use super::*;
     use arrow::array::{ArrayRef, UInt64Array};
     use arrow_util::assert_batches_eq;
+    use datafusion_util::test_collect;
 
     fn seq_array(start: u64, end: u64) -> ArrayRef {
         Arc::new(UInt64Array::from_iter_values(start..end))
@@ -237,7 +237,7 @@ mod tests {
 
         let projection = None;
         let scan = scan_batch(batch.clone(), batch.schema(), projection).unwrap();
-        let collected = datafusion::physical_plan::collect(scan).await.unwrap();
+        let collected = test_collect(scan).await;
 
         let expected = vec![
             "+------+------+------+------+",
@@ -264,7 +264,7 @@ mod tests {
 
         let projection = Some(vec![3, 1]);
         let scan = scan_batch(batch.clone(), batch.schema(), projection.as_ref()).unwrap();
-        let collected = datafusion::physical_plan::collect(scan).await.unwrap();
+        let collected = test_collect(scan).await;
 
         let expected = vec![
             "+------+------+",
