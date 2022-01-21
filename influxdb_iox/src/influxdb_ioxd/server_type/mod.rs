@@ -12,6 +12,7 @@ pub mod common_state;
 pub mod database;
 pub mod router;
 pub mod router2;
+pub mod ingester;
 pub mod test;
 
 #[derive(Debug, Snafu)]

@@ -5,7 +5,7 @@ use influxdb_line_protocol::FieldValue;
 use snafu::{OptionExt, Snafu};
 use std::collections::BTreeMap;
 use std::convert::TryFrom;
-use std::fmt::Formatter;
+use std::fmt::{Formatter, Debug};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -249,7 +249,7 @@ impl std::fmt::Display for ParquetFileId {
 
 /// Container that can return repos for each of the catalog data types.
 #[async_trait]
-pub trait RepoCollection {
+pub trait RepoCollection: Send + Sync + Debug {
     /// repo for kafka topics
     fn kafka_topic(&self) -> Arc<dyn KafkaTopicRepo + Sync + Send>;
     /// repo fo rquery pools

@@ -15,3 +15,4 @@
 #[allow(dead_code)]
 pub mod data;
 pub mod server;
+pub mod handler;

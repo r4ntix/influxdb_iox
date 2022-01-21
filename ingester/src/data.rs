@@ -13,6 +13,7 @@ use iox_catalog::interface::{
 use mutable_batch::MutableBatch;
 use parking_lot::RwLock;
 use snafu::{OptionExt, ResultExt, Snafu};
+use crate::handler::{IngestHandler, IngestHandlerImpl};
 
 #[derive(Debug, Snafu)]
 #[allow(missing_copy_implementations, missing_docs)]
@@ -54,8 +55,8 @@ pub struct Sequencers {
 
 impl Sequencers {
     /// One time initialize Sequencers of this Ingester
-    pub async fn initialize<T: RepoCollection + Send + Sync>(
-        ingester: &IngesterServer<'_, T>,
+    pub async fn initialize(
+        ingester: &IngestHandlerImpl,
     ) -> Result<Self> {
         // Get sequencer ids from the catalog
         let sequencer_repro = ingester.iox_catalog.sequencer();
