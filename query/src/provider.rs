@@ -24,7 +24,7 @@ use schema::{merge::SchemaMerger, sort::SortKey, Schema};
 use crate::{
     compute_sort_key,
     util::{arrow_sort_key_exprs, df_physical_expr},
-    QueryChunk,
+    QueryChunk, chunks_have_stats,
 };
 
 use snafu::{ResultExt, Snafu};
@@ -386,8 +386,10 @@ impl<C: QueryChunk + 'static> Deduplicater<C> {
         // Initialize an empty sort key
         let mut output_sort_key = SortKey::with_capacity(0);
         if sort_output {
+            println!("--- in sort_output");
             // Compute the output sort key which is the super key of chunks' keys base on their data cardinality
             output_sort_key = compute_sort_key(chunks.iter().map(|x| x.summary()));
+            println!("output_sort_key: {:#?}", output_sort_key);
         }
 
         // find overlapped chunks and put them into the right group
@@ -397,6 +399,7 @@ impl<C: QueryChunk + 'static> Deduplicater<C> {
         let mut plans: Vec<Arc<dyn ExecutionPlan>> = vec![];
         if self.no_duplicates() {
             // Neither overlaps nor duplicates, no deduplicating needed
+            println!("--- no_duplicates");
             let mut non_duplicate_plans = Self::build_plans_for_non_duplicates_chunks(
                 Arc::clone(&table_name),
                 Arc::clone(&output_schema),
@@ -406,6 +409,7 @@ impl<C: QueryChunk + 'static> Deduplicater<C> {
             )?;
             plans.append(&mut non_duplicate_plans);
         } else {
+            println!("--- has duplicates");
             trace!(overlapped_chunks=?self.overlapped_chunks_set.len(),
                 in_chunk_duplicates=?self.in_chunk_duplicates_chunks.len(),
                 no_duplicates_chunks=?self.no_duplicates_chunks.len(),
@@ -413,6 +417,7 @@ impl<C: QueryChunk + 'static> Deduplicater<C> {
 
             // Go over overlapped set, build deduplicate plan for each vector of overlapped chunks
             for overlapped_chunks in self.overlapped_chunks_set.to_vec() {
+                println!("--- overlapped_chunks");
                 plans.push(Self::build_deduplicate_plan_for_overlapped_chunks(
                     Arc::clone(&table_name),
                     Arc::clone(&output_schema),
@@ -424,6 +429,7 @@ impl<C: QueryChunk + 'static> Deduplicater<C> {
 
             // Go over each in_chunk_duplicates_chunks, build deduplicate plan for each
             for chunk_with_duplicates in self.in_chunk_duplicates_chunks.to_vec() {
+                println!("--- chunk_with_duplicates");
                 plans.push(Self::build_deduplicate_plan_for_chunk_with_duplicates(
                     Arc::clone(&table_name),
                     Arc::clone(&output_schema),
@@ -435,6 +441,7 @@ impl<C: QueryChunk + 'static> Deduplicater<C> {
 
             // Go over non_duplicates_chunks, build a plan for it
             for no_duplicates_chunk in self.no_duplicates_chunks.to_vec() {
+                println!("--- no_duplicates_chunk");
                 plans.push(Self::build_plan_for_non_duplicates_chunk(
                     Arc::clone(&table_name),
                     Arc::clone(&output_schema),
@@ -476,18 +483,23 @@ impl<C: QueryChunk + 'static> Deduplicater<C> {
     ///  2. vector of non-overlapped chunks, each have duplicates in itself
     ///  3. vectors of non-overlapped chunks without duplicates
     fn split_overlapped_chunks(&mut self, chunks: Vec<Arc<C>>) -> Result<()> {
-        // Find all groups based on statstics
-        let groups = group_potential_duplicates(chunks).context(InternalChunkGroupingSnafu)?;
+        if !chunks_have_stats(&chunks) {
+            // no statistics, consider all chunks overlap
+            self.overlapped_chunks_set.push(chunks);
+        } else {
+            // Find all groups based on statstics
+            let groups = group_potential_duplicates(chunks).context(InternalChunkGroupingSnafu)?;
 
-        for mut group in groups {
-            if group.len() == 1 {
-                if group[0].may_contain_pk_duplicates() {
-                    self.in_chunk_duplicates_chunks.append(&mut group);
+            for mut group in groups {
+                if group.len() == 1 {
+                    if group[0].may_contain_pk_duplicates() {
+                        self.in_chunk_duplicates_chunks.append(&mut group);
+                    } else {
+                        self.no_duplicates_chunks.append(&mut group);
+                    }
                 } else {
-                    self.no_duplicates_chunks.append(&mut group);
+                    self.overlapped_chunks_set.push(group)
                 }
-            } else {
-                self.overlapped_chunks_set.push(group)
             }
         }
         Ok(())

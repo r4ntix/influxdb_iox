@@ -52,6 +52,10 @@ pub trait QueryChunkMeta: Sized {
         !self.delete_predicates().is_empty()
     }
 
+    /// return true of this chunk has summary which
+    /// will be able to provide statistics
+    fn has_stats(&self) -> bool;
+
     /// return column names participating in the all delete predicates
     /// in lexicographical order with one exception that time column is last
     /// This order is to be consistent with Schema::primary_key
@@ -236,6 +240,25 @@ where
         debug!(?pred, "Delete predicate in QueryChunkMeta");
         pred
     }
+
+    fn has_stats(&self) -> bool {
+        self.as_ref().has_stats()
+    }
+}
+
+/// return true if all the chunks inlcude statistics 
+pub fn chunks_have_stats<C>(chunks: &Vec<C>) -> bool 
+where
+    C: QueryChunkMeta,
+{
+    // If at least one of the provided chunk cannot provide stats,
+    // do not need to compute potential duplicates. We will treat
+    // as all of them have duplicates
+    for chunk in chunks {
+        if !chunk.has_stats() { return false; }
+    }
+
+    true
 }
 
 /// Compute a sort key that orders lower cardinality columns first

@@ -957,6 +957,10 @@ impl QueryChunkMeta for TestChunk {
 
         pred
     }
+
+    fn has_stats(&self) -> bool {
+        true
+    }
 }
 
 /// Return the raw data from the list of chunks

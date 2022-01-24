@@ -94,6 +94,10 @@ impl QueryChunkMeta for QueryableBatch {
     fn delete_predicates(&self) -> &[Arc<DeletePredicate>] {
         self.delete_predicates.as_ref()
     }
+
+    fn has_stats(&self) -> bool {
+        false
+    }
 }
 
 impl QueryChunk for QueryableBatch {

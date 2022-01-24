@@ -576,6 +576,10 @@ impl QueryChunkMeta for DbChunk {
 
         pred
     }
+    
+    fn has_stats(&self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]
