@@ -39,7 +39,7 @@ pub use exec::context::{DEFAULT_CATALOG, DEFAULT_SCHEMA};
 /// metadata
 pub trait QueryChunkMeta: Sized {
     /// Return a reference to the summary of the data
-    fn summary(&self) -> &TableSummary;
+    fn summary(&self) -> Option<&TableSummary>;
 
     /// return a reference to the summary of the data held in this chunk
     fn schema(&self) -> Arc<Schema>;
@@ -51,10 +51,6 @@ pub trait QueryChunkMeta: Sized {
     fn has_delete_predicates(&self) -> bool {
         !self.delete_predicates().is_empty()
     }
-
-    /// return true of this chunk has summary which
-    /// will be able to provide statistics
-    fn has_stats(&self) -> bool;
 
     /// return column names participating in the all delete predicates
     /// in lexicographical order with one exception that time column is last
@@ -227,7 +223,7 @@ impl<P> QueryChunkMeta for Arc<P>
 where
     P: QueryChunkMeta,
 {
-    fn summary(&self) -> &TableSummary {
+    fn summary(&self) -> Option<&TableSummary> {
         self.as_ref().summary()
     }
 
@@ -240,10 +236,6 @@ where
         debug!(?pred, "Delete predicate in QueryChunkMeta");
         pred
     }
-
-    fn has_stats(&self) -> bool {
-        self.as_ref().has_stats()
-    }
 }
 
 /// return true if all the chunks inlcude statistics
@@ -254,13 +246,7 @@ where
     // If at least one of the provided chunk cannot provide stats,
     // do not need to compute potential duplicates. We will treat
     // as all of them have duplicates
-    for chunk in chunks {
-        if !chunk.has_stats() {
-            return false;
-        }
-    }
-
-    true
+    chunks.iter().all(|c| c.summary().is_some())
 }
 
 pub fn compute_sort_key_for_chunks<'a, C>(schema: &'a Schema, chunks: &'a [C]) -> SortKey<'a>
@@ -268,7 +254,8 @@ where
     C: QueryChunkMeta,
 {
     if !chunks_have_stats(chunks) {
-        // chunks have not enough stats, return its  pk
+        // chunks have not enough stats, return its  pk that is
+        // sorted lexicographically but time column always last
         let pk = schema.primary_key();
         let mut sort_key = SortKey::with_capacity(pk.len());
         for col in pk {
@@ -276,7 +263,10 @@ where
         }
         sort_key
     } else {
-        compute_sort_key(chunks.iter().map(|x| x.summary()))
+        let summaries = chunks
+            .iter()
+            .map(|x| x.summary().expect("Chunk should have summary"));
+        compute_sort_key(summaries)
     }
 }
 

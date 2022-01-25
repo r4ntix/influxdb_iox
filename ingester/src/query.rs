@@ -77,8 +77,8 @@ impl QueryableBatch {
 }
 
 impl QueryChunkMeta for QueryableBatch {
-    fn summary(&self) -> &TableSummary {
-        unimplemented!()
+    fn summary(&self) -> Option<&TableSummary> {
+        None
     }
 
     fn schema(&self) -> Arc<Schema> {
@@ -93,10 +93,6 @@ impl QueryChunkMeta for QueryableBatch {
 
     fn delete_predicates(&self) -> &[Arc<DeletePredicate>] {
         self.delete_predicates.as_ref()
-    }
-
-    fn has_stats(&self) -> bool {
-        false
     }
 }
 
