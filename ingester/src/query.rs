@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use arrow::record_batch::RecordBatch;
+use arrow::{array::new_null_array, record_batch::RecordBatch};
 use data_types::{
     chunk_metadata::{ChunkAddr, ChunkId, ChunkOrder},
     delete_predicate::DeletePredicate,
@@ -16,26 +16,31 @@ use predicate::{
 };
 use query::{exec::stringset::StringSet, QueryChunk, QueryChunkMeta};
 use schema::{merge::SchemaMerger, selection::Selection, sort::SortKey, Schema};
-use snafu::Snafu;
+use snafu::{ResultExt, Snafu};
 
 use crate::data::{QueryableBatch, SnapshotBatch};
 
 #[derive(Debug, Snafu)]
 #[allow(missing_copy_implementations, missing_docs)]
 pub enum Error {
-    #[snafu(display("Error while building delete predicate from start time, {}, stop time, {}, and serialized predicate, {}", min, max, predicate))]
+    #[snafu(display("Internal error while building delete predicate from start time, {}, stop time, {}, and serialized predicate, {}", min, max, predicate))]
     DeletePredicate {
         source: predicate::delete_predicate::Error,
         min: String,
         max: String,
         predicate: String,
     },
+
+    // #[snafu(display("Internal error while adding NULL columns into a record batch"))]
+    // PaddNulls { source: arrow::error::ArrowError },
+    #[snafu(display("Internal error while concat record batches {}", source))]
+    ConcatBatches { source: arrow::error::ArrowError },
 }
 
 /// A specialized `Error` for Ingester's Query errors
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
-// todo: move this function to a more appropriate crate
+// todo: Ask alamb whether these 2 functions should be moved to a more appropriate crate
 /// Return the merged schema for RecordBatches
 ///
 /// This is infallable because the schemas of chunks within a
@@ -48,6 +53,57 @@ pub fn merge_record_batch_schemas(batches: &[Arc<RecordBatch>]) -> Arc<Schema> {
         merger = merger.merge(&schema).expect("schemas compatible");
     }
     Arc::new(merger.build())
+}
+
+/// Merge the record bacthes into one record batch
+/// and padd null values to columns that are not available in certain bacthes
+pub fn merge_record_batches(batches: Vec<Arc<RecordBatch>>) -> Result<Option<RecordBatch>> {
+    // Schema of all record batches after mergeing
+    let output_schema = merge_record_batch_schemas(&batches);
+
+    // Add null values for non-existing columns
+    let batches = batches
+        .iter()
+        .map(|batch| {
+            let batch_schema = batch.schema();
+
+            // Go over all columns of output_schema
+            let batch_output_columns = output_schema
+                .inner()
+                .fields()
+                .iter()
+                .map(|output_field| {
+                    // See if the output_field available in the batch
+                    let batch_field_index = batch_schema
+                        .fields()
+                        .iter()
+                        .enumerate()
+                        .find(|(_, batch_field)| output_field.name() == batch_field.name())
+                        .map(|(idx, _)| idx);
+
+                    if let Some(batch_field_index) = batch_field_index {
+                        // The column available, use it
+                        Arc::clone(batch.column(batch_field_index))
+                    } else {
+                        // the column not avaialble, add it with all null values
+                        new_null_array(output_field.data_type(), batch.num_rows())
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            RecordBatch::try_new(output_schema.as_arrow(), batch_output_columns)
+                .expect("A record batch should have been created")
+        })
+        .collect::<Vec<_>>();
+
+    // Combine batches
+    if batches.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(
+        RecordBatch::concat(&output_schema.as_arrow(), &batches).context(ConcatBatchesSnafu)?,
+    ))
 }
 
 impl QueryableBatch {
@@ -179,8 +235,19 @@ impl QueryChunk for QueryableBatch {
         _predicate: &Predicate, // no needs because all data will be read for compaction
         _selection: Selection<'_>, // no needs because all columns will be read and compact
     ) -> Result<SendableRecordBatchStream, Self::Error> {
+        // Get all record batches from their snapshots
         let batches: Vec<_> = self.data.iter().map(|s| Arc::clone(&s.data)).collect();
-        let stream = SizedRecordBatchStream::new(self.schema().as_arrow(), batches);
+
+        // Combine record batches into one bacth and padding null values as needed
+        let batch = merge_record_batches(batches)?;
+
+        let mut stream_batches = vec![];
+        if let Some(batch) = batch {
+            stream_batches.push(Arc::new(batch));
+        }
+
+        // Return sream of data
+        let stream = SizedRecordBatchStream::new(self.schema().as_arrow(), stream_batches);
         Ok(Box::pin(stream))
     }
 

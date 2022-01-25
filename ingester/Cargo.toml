@@ -6,7 +6,6 @@ edition = "2021"
 
 [dependencies]
 arrow = { version = "7.0", features = ["prettyprint"] }
-arrow_util = { path = "../arrow_util" }
 datafusion = { path = "../datafusion" }
 data_types = { path = "../data_types" }
 hyper = "0.14"
@@ -22,3 +21,7 @@ tokio = { version = "1.13", features = ["macros", "parking_lot", "rt-multi-threa
 thiserror = "1.0"
 uuid = { version = "0.8", features = ["v4"] }
 workspace-hack = { path = "../workspace-hack"}
+
+[dev_dependencies]
+arrow_util = { path = "../arrow_util" }
+
