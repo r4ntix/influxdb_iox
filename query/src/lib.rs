@@ -246,8 +246,8 @@ where
     }
 }
 
-/// return true if all the chunks inlcude statistics 
-pub fn chunks_have_stats<C>(chunks: &Vec<C>) -> bool 
+/// return true if all the chunks inlcude statistics
+pub fn chunks_have_stats<C>(chunks: &[C]) -> bool
 where
     C: QueryChunkMeta,
 {
@@ -255,10 +255,29 @@ where
     // do not need to compute potential duplicates. We will treat
     // as all of them have duplicates
     for chunk in chunks {
-        if !chunk.has_stats() { return false; }
+        if !chunk.has_stats() {
+            return false;
+        }
     }
 
     true
+}
+
+pub fn compute_sort_key_for_chunks<'a, C>(schema: &'a Schema, chunks: &'a [C]) -> SortKey<'a>
+where
+    C: QueryChunkMeta,
+{
+    if !chunks_have_stats(chunks) {
+        // chunks have not enough stats, return its  pk
+        let pk = schema.primary_key();
+        let mut sort_key = SortKey::with_capacity(pk.len());
+        for col in pk {
+            sort_key.push(col, Default::default())
+        }
+        sort_key
+    } else {
+        compute_sort_key(chunks.iter().map(|x| x.summary()))
+    }
 }
 
 /// Compute a sort key that orders lower cardinality columns first

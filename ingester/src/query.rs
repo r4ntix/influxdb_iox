@@ -103,9 +103,11 @@ impl QueryChunkMeta for QueryableBatch {
 impl QueryChunk for QueryableBatch {
     type Error = Error;
 
-    // This function should not be used in PersistingBatch context
+    // This function should not be used in QueryBatch context
     fn id(&self) -> ChunkId {
-        unimplemented!()
+        // always return id 0 for debugging mode
+        // todo: need to see if the same id for all chunks will cause any panics
+        ChunkId::new_test(0)
     }
 
     // This function should not be used in PersistingBatch context
