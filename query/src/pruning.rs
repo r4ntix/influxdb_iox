@@ -8,13 +8,14 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Int32Type, TimeUnit};
 
 use data_types::partition_metadata::{StatValues, Statistics};
+use datafusion::logical_plan::{Expr, Operator};
 use datafusion::{
     logical_plan::Column,
     physical_optimizer::pruning::{PruningPredicate, PruningStatistics},
 };
 use observability_deps::tracing::{debug, trace};
 use predicate::predicate::Predicate;
-use schema::Schema;
+use schema::{Schema, TIME_COLUMN_NAME};
 
 use crate::{group_by::Aggregate, QueryChunkMeta};
 
@@ -37,15 +38,15 @@ pub trait PruningObserver {
 pub fn prune_chunks<C, O>(
     observer: &O,
     table_schema: Arc<Schema>,
-    chunks: Vec<Arc<C>>,
+    mut chunks: Vec<Arc<C>>,
     predicate: &Predicate,
 ) -> Vec<Arc<C>>
 where
     C: QueryChunkMeta,
     O: PruningObserver<Observed = C>,
 {
-    let num_chunks = chunks.len();
-    trace!(num_chunks, %predicate, "Pruning chunks");
+    let initial_chunks = chunks.len();
+    trace!(initial_chunks, %predicate, "Pruning chunks");
 
     let filter_expr = match predicate.filter_expr() {
         Some(expr) => expr,
@@ -54,19 +55,67 @@ where
             return chunks;
         }
     };
+
+    // A large number of chunks can likely be ruled out based on time alone
+    //
+    // Additionally, the timestamp statistics are cheaper to aggregate and
+    // evaluate predicates against than the strings found in tag columns
+    //
+    // We therefore do an initial pass with just the time predicates
+    if let Some(time_predicate) = extract_time_predicate(&filter_expr) {
+        prune_chunks_impl(
+            observer,
+            table_schema.as_ref(),
+            &time_predicate,
+            &mut chunks,
+        );
+
+        let remaining_chunks = chunks.len();
+        debug!(
+            %predicate,
+            initial_chunks,
+            num_pruned_chunks = initial_chunks - remaining_chunks,
+            remaining_chunks,
+            "Pruned chunks with time predicate"
+        );
+    }
+
+    prune_chunks_impl(observer, table_schema.as_ref(), &filter_expr, &mut chunks);
+
+    let remaining_chunks = chunks.len();
+    debug!(
+        %predicate,
+        initial_chunks,
+        num_pruned_chunks = initial_chunks - remaining_chunks,
+        remaining_chunks,
+        "Pruned chunks"
+    );
+
+    chunks
+}
+
+fn prune_chunks_impl<C, O>(
+    observer: &O,
+    table_schema: &Schema,
+    filter_expr: &Expr,
+    chunks: &mut Vec<Arc<C>>,
+) where
+    C: QueryChunkMeta,
+    O: PruningObserver<Observed = C>,
+{
     trace!(%filter_expr, "Filter_expr of pruning chunks");
 
-    let pruning_predicate = match PruningPredicate::try_new(&filter_expr, table_schema.as_arrow()) {
+    let pruning_predicate = match PruningPredicate::try_new(filter_expr, table_schema.as_arrow()) {
         Ok(p) => p,
         Err(e) => {
             observer.could_not_prune("Can not create pruning predicate");
             trace!(%e, ?filter_expr, "Can not create pruning predicate");
-            return chunks;
+            return;
         }
     };
 
     let statistics = ChunkPruningStatistics {
-        table_schema: table_schema.as_ref(),
+        table_schema,
         chunks: chunks.as_slice(),
     };
 
@@ -75,31 +124,20 @@ where
         Err(e) => {
             observer.could_not_prune("Can not create pruning predicate");
             trace!(%e, ?filter_expr, "Can not create pruning predicate");
-            return chunks;
+            return;
         }
     };
 
     assert_eq!(chunks.len(), results.len());
 
-    let mut pruned_chunks = Vec::with_capacity(chunks.len());
-    for (chunk, keep) in chunks.into_iter().zip(results) {
-        match keep {
-            true => pruned_chunks.push(chunk),
-            false => {
-                observer.was_pruned(chunk.as_ref());
-            }
+    let mut iter = results.into_iter();
+    chunks.retain(|chunk| match iter.next().unwrap() {
+        true => true,
+        false => {
+            observer.was_pruned(chunk.as_ref());
+            false
         }
-    }
-
-    let num_remaining_chunks = pruned_chunks.len();
-    debug!(
-        %predicate,
-        num_chunks,
-        num_pruned_chunks = num_chunks - num_remaining_chunks,
-        num_remaining_chunks,
-        "Pruned chunks"
-    );
-    pruned_chunks
+    });
 }
 
 /// Wraps a collection of [`QueryChunkMeta`] and implements the [`PruningStatistics`]
@@ -219,6 +257,58 @@ fn get_aggregate<T>(stats: &StatValues<T>, aggregate: Aggregate) -> &Option<T> {
         Aggregate::Min => &stats.min,
         Aggregate::Max => &stats.max,
         _ => &None,
+    }
+}
+
+/// Given an expression extracts the disjoint predicates on exclusively the time column that
+/// must evaluate to `true` in order for `expr` to evaluate to `true`
+fn extract_time_predicate(expr: &Expr) -> Option<Expr> {
+    match expr {
+        Expr::Column(column) => match column.name.as_str() {
+            TIME_COLUMN_NAME => Some(Expr::Column(column.clone())),
+            _ => None,
+        },
+        Expr::BinaryExpr { left, op, right } => {
+            let left = extract_time_predicate(left.as_ref());
+            let right = extract_time_predicate(right.as_ref());
+
+            match (left, op, right) {
+                (Some(left), op, Some(right)) => Some(Expr::BinaryExpr {
+                    left: Box::new(left),
+                    op: *op,
+                    right: Box::new(right),
+                }),
+                (Some(left), Operator::And, None) => Some(left),
+                (None, Operator::And, Some(right)) => Some(right),
+                _ => None,
+            }
+        }
+        Expr::Cast { expr, data_type } => {
+            let expr = extract_time_predicate(expr.as_ref())?;
+            Some(Expr::Cast {
+                expr: Box::new(expr),
+                data_type: data_type.clone(),
+            })
+        }
+        Expr::Between {
+            expr,
+            negated,
+            low,
+            high,
+        } => {
+            let expr = Box::new(extract_time_predicate(expr)?);
+            let low = Box::new(extract_time_predicate(low)?);
+            let high = Box::new(extract_time_predicate(high)?);
+
+            Some(Expr::Between {
+                expr,
+                negated: *negated,
+                low,
+                high,
+            })
+        }
+        Expr::Literal(x) => Some(Expr::Literal(x.clone())),
+        _ => None,
     }
 }
 
