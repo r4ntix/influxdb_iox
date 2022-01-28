@@ -173,6 +173,48 @@ async fn test_cases_stats_plans_sql() {
 }
 
 #[tokio::test]
+// Tests from "system_tables.sql",
+async fn test_cases_system_tables_sql() {
+    let input_path = Path::new("cases").join("in").join("system_tables.sql");
+    let mut runner = Runner::new();
+    runner
+        .run(input_path)
+        .await
+        .expect("test failed");
+    runner
+        .flush()
+        .expect("flush worked");
+}
+
+#[tokio::test]
+// Tests from "system_tables_one_chunk.sql",
+async fn test_cases_system_tables_one_chunk_sql() {
+    let input_path = Path::new("cases").join("in").join("system_tables_one_chunk.sql");
+    let mut runner = Runner::new();
+    runner
+        .run(input_path)
+        .await
+        .expect("test failed");
+    runner
+        .flush()
+        .expect("flush worked");
+}
+
+#[tokio::test]
+// Tests from "system_tables_two_chunks.sql",
+async fn test_cases_system_tables_two_chunks_sql() {
+    let input_path = Path::new("cases").join("in").join("system_tables_two_chunks.sql");
+    let mut runner = Runner::new();
+    runner
+        .run(input_path)
+        .await
+        .expect("test failed");
+    runner
+        .flush()
+        .expect("flush worked");
+}
+
+#[tokio::test]
 // Tests from "timestamps.sql",
 async fn test_cases_timestamps_sql() {
     let input_path = Path::new("cases").join("in").join("timestamps.sql");
