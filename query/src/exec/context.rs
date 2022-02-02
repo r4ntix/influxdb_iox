@@ -14,6 +14,7 @@ use datafusion::{
     physical_optimizer::{
         aggregate_statistics::AggregateStatistics, coalesce_batches::CoalesceBatches,
         hash_build_probe_order::HashBuildProbeOrder, merge_exec::AddCoalescePartitionsExec,
+        optimizer::PhysicalOptimizerRule,
     },
     physical_plan::{
         coalesce_partitions::CoalescePartitionsExec,
@@ -168,7 +169,7 @@ const BATCH_SIZE: usize = 1000;
 
 impl IOxExecutionConfig {
     pub(super) fn new(exec: DedicatedExecutor) -> Self {
-        let physical_optimizers = vec![
+        let physical_optimizers: Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>> = vec![
             Arc::new(AggregateStatistics::new()),
             Arc::new(HashBuildProbeOrder::new()),
             Arc::new(CoalesceBatches::new()),

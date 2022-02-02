@@ -27,6 +27,7 @@ use crate::{
     QueryChunk,
 };
 
+use datafusion::physical_plan::empty::EmptyExec;
 use snafu::{ResultExt, Snafu};
 
 mod adapter;
@@ -971,8 +972,16 @@ impl<C: QueryChunk + 'static> Deduplicater<C> {
     ) -> Result<Vec<Arc<dyn ExecutionPlan>>> {
         let mut plans: Vec<Arc<dyn ExecutionPlan>> = vec![];
 
+        // If there is no chunk produce an `EmptyExec`. This has a single partition
+        // and so avoids causing issues for `CoalescePartitionsExec` and `SortExec`
+        // which expect a single input partition. Ideally we would instead prune
+        // branches from the physical plan that cannot yield any rows (#3611)
+        if chunks.is_empty() {
+            plans.push(Arc::new(EmptyExec::new(false, output_schema.as_arrow())));
+            return Ok(plans);
+        }
+
         // Only chunks without delete predicates should be in this one IOxReadFilterNode
-        // if there is no chunk, we still need to return a plan
         if (output_sort_key.is_empty() && Self::no_delete_predicates(&chunks)) || chunks.is_empty()
         {
             plans.push(Arc::new(IOxReadFilterNode::new(
