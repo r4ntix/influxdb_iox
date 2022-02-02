@@ -11,6 +11,10 @@ use datafusion::{
     execution::context::{ExecutionContextState, QueryPlanner},
     execution::{DiskManager, MemoryManager},
     logical_plan::{LogicalPlan, UserDefinedLogicalNode},
+    physical_optimizer::{
+        aggregate_statistics::AggregateStatistics, coalesce_batches::CoalesceBatches,
+        hash_build_probe_order::HashBuildProbeOrder, merge_exec::AddCoalescePartitionsExec,
+    },
     physical_plan::{
         coalesce_partitions::CoalescePartitionsExec,
         displayable,
@@ -164,12 +168,22 @@ const BATCH_SIZE: usize = 1000;
 
 impl IOxExecutionConfig {
     pub(super) fn new(exec: DedicatedExecutor) -> Self {
+        let physical_optimizers = vec![
+            Arc::new(AggregateStatistics::new()),
+            Arc::new(HashBuildProbeOrder::new()),
+            Arc::new(CoalesceBatches::new()),
+            // Arc::new(Repartition::new()), - https://github.com/apache/arrow-datafusion/issues/1731
+            Arc::new(AddCoalescePartitionsExec::new()),
+        ];
+
         let execution_config = ExecutionConfig::new()
             .with_batch_size(BATCH_SIZE)
+            .with_target_partitions(exec.num_threads())
             .create_default_catalog_and_schema(true)
             .with_information_schema(true)
             .with_default_catalog_and_schema(DEFAULT_CATALOG, DEFAULT_SCHEMA)
-            .with_query_planner(Arc::new(IOxQueryPlanner {}));
+            .with_query_planner(Arc::new(IOxQueryPlanner {}))
+            .with_physical_optimizer_rules(physical_optimizers);
 
         Self {
             exec,

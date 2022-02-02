@@ -71,6 +71,8 @@ impl<T> PinnedDrop for Job<T> {
 /// them) on a separate tokio Executor
 #[derive(Clone)]
 pub struct DedicatedExecutor {
+    num_threads: usize,
+
     state: Arc<Mutex<State>>,
 }
 
@@ -157,6 +159,7 @@ impl DedicatedExecutor {
         };
 
         Self {
+            num_threads,
             state: Arc::new(Mutex::new(state)),
         }
     }
@@ -211,6 +214,11 @@ impl DedicatedExecutor {
         // to quit
         let mut state = self.state.lock();
         state.requests = None;
+    }
+
+    /// Returns the size of the backing thread pool
+    pub fn num_threads(&self) -> usize {
+        self.num_threads
     }
 
     /// Stops all subsequent task executions, and waits for the worker
