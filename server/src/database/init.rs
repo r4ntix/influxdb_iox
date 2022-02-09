@@ -367,17 +367,17 @@ impl DatabaseState {
             }
             Self::RulesLoaded(state) | Self::CatalogLoadError(state, _) => {
                 match state.advance(shared).await {
-                    Ok(state) => DatabaseState::CatalogLoaded(state),
-                    Err(e) => DatabaseState::CatalogLoadError(state, Arc::new(e)),
+                    Ok(state) => Self::CatalogLoaded(state),
+                    Err(e) => Self::CatalogLoadError(state, Arc::new(e)),
                 }
             }
             Self::CatalogLoaded(state) | Self::WriteBufferCreationError(state, _) => {
                 match state.advance(shared).await {
-                    Ok(state) => DatabaseState::Initialized(state),
+                    Ok(state) => Self::Initialized(state),
                     Err(e @ InitError::CreateWriteBuffer { .. }) => {
-                        DatabaseState::WriteBufferCreationError(state, Arc::new(e))
+                        Self::WriteBufferCreationError(state, Arc::new(e))
                     }
-                    Err(e) => DatabaseState::ReplayError(state, Arc::new(e)),
+                    Err(e) => Self::ReplayError(state, Arc::new(e)),
                 }
             }
             Self::ReplayError(state, _) => {
