@@ -3,8 +3,6 @@
 use std::sync::Arc;
 
 use crate::dml_handlers::DmlHandler;
-use hashbrown::HashMap;
-use mutable_batch::MutableBatch;
 use trace::TraceCollector;
 
 use self::{grpc::GrpcDelegate, http::HttpDelegate};
@@ -53,7 +51,7 @@ impl<D> RouterServer<D> {
 
 impl<D> RouterServer<D>
 where
-    D: DmlHandler<WriteInput = HashMap<String, MutableBatch>>,
+    D: DmlHandler<WriteInput = String>,
 {
     /// Get a reference to the router http delegate.
     pub fn http(&self) -> &HttpDelegate<D> {

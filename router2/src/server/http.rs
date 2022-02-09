@@ -6,14 +6,11 @@ use bytes::{Bytes, BytesMut};
 use data_types::names::{org_and_bucket_to_database, OrgBucketMappingError};
 
 use futures::StreamExt;
-use hashbrown::HashMap;
 use hyper::{header::CONTENT_ENCODING, Body, Method, Request, Response, StatusCode};
-use mutable_batch::MutableBatch;
 use observability_deps::tracing::*;
 use predicate::delete_predicate::{parse_delete_predicate, parse_http_delete_request};
 use serde::Deserialize;
 use thiserror::Error;
-use time::{SystemProvider, TimeProvider};
 use trace::ctx::SpanContext;
 
 use crate::dml_handlers::{DmlError, DmlHandler, PartitionError};
@@ -153,13 +150,12 @@ impl<T> TryFrom<&Request<T>> for OrgBucketInfo {
 /// server runner framework takes care of implementing the heath endpoint,
 /// metrics, pprof, etc.
 #[derive(Debug, Default)]
-pub struct HttpDelegate<D, T = SystemProvider> {
+pub struct HttpDelegate<D> {
     max_request_bytes: usize,
-    time_provider: T,
     dml_handler: D,
 }
 
-impl<D> HttpDelegate<D, SystemProvider> {
+impl<D> HttpDelegate<D> {
     /// Initialise a new [`HttpDelegate`] passing valid requests to the
     /// specified `dml_handler`.
     ///
@@ -168,16 +164,14 @@ impl<D> HttpDelegate<D, SystemProvider> {
     pub fn new(max_request_bytes: usize, dml_handler: D) -> Self {
         Self {
             max_request_bytes,
-            time_provider: SystemProvider::default(),
             dml_handler,
         }
     }
 }
 
-impl<D, T> HttpDelegate<D, T>
+impl<D> HttpDelegate<D>
 where
-    D: DmlHandler<WriteInput = HashMap<String, MutableBatch>>,
-    T: TimeProvider,
+    D: DmlHandler<WriteInput = String>,
 {
     /// Routes `req` to the appropriate handler, if any, returning the handler
     /// response.
@@ -203,22 +197,7 @@ where
         let body = self.read_body(req).await?;
         let body = std::str::from_utf8(&body).map_err(Error::NonUtf8Body)?;
 
-        // The time, in nanoseconds since the epoch, to assign to any points that don't
-        // contain a timestamp
-        let default_time = self.time_provider.now().timestamp_nanos();
-
-        let (batches, stats) = match mutable_batch_lp::lines_to_batches_stats(body, default_time) {
-            Ok(v) => v,
-            Err(mutable_batch_lp::Error::EmptyPayload) => {
-                debug!("nothing to write");
-                return Ok(());
-            }
-            Err(e) => return Err(Error::ParseLineProtocol(e)),
-        };
-
         debug!(
-            num_lines=stats.num_lines,
-            num_fields=stats.num_fields,
             body_size=body.len(),
             %namespace,
             org=%account.org,
@@ -227,7 +206,7 @@ where
         );
 
         self.dml_handler
-            .write(namespace, batches, span_ctx)
+            .write(namespace, body.to_owned(), span_ctx)
             .await
             .map_err(Into::into)?;
 
@@ -550,15 +529,6 @@ mod tests {
         body = "platanos,tag1=A,tag2=B val=42i 123456".as_bytes(),
         dml_handler = [Ok(())],
         want_result = Err(Error::InvalidOrgBucket(OrgBucketError::MappingFail(_))),
-        want_dml_calls = [] // None
-    );
-
-    test_write_handler!(
-        invalid_line_protocol,
-        query_string = "?org=bananas&bucket=test",
-        body = "not line protocol".as_bytes(),
-        dml_handler = [Ok(())],
-        want_result = Err(Error::ParseLineProtocol(_)),
         want_dml_calls = [] // None
     );
 
