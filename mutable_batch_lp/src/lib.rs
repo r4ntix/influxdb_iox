@@ -81,29 +81,38 @@ impl LinesConverter {
     /// Write some line protocol data
     pub fn write_lp(&mut self, lines: &str) -> Result<()> {
         for (line_idx, maybe_line) in parse_lines(lines).enumerate() {
-            let mut line = maybe_line.context(LineProtocolSnafu { line: line_idx + 1 })?;
-
-            if let Some(t) = line.timestamp.as_mut() {
-                *t *= self.timestamp_base
-            }
-
-            self.stats.num_lines += 1;
-            self.stats.num_fields += line.field_set.len();
-
-            let measurement = line.series.measurement.as_str();
-
-            let (_, batch) = self
-                .batches
-                .raw_entry_mut()
-                .from_key(measurement)
-                .or_insert_with(|| (measurement.to_string(), MutableBatch::new()));
-
-            // TODO: Reuse writer
-            let mut writer = Writer::new(batch, 1);
-            write_line(&mut writer, &line, self.default_time)
+            let line = maybe_line.context(LineProtocolSnafu { line: line_idx + 1 })?;
+            self.write_parsed_line(line)
                 .context(WriteSnafu { line: line_idx + 1 })?;
-            writer.commit();
         }
+        Ok(())
+    }
+
+    /// Write a single `line` to the internal mutable batch buffer.
+    pub fn write_parsed_line(
+        &mut self,
+        mut line: ParsedLine<'_>,
+    ) -> mutable_batch::writer::Result<()> {
+        if let Some(t) = line.timestamp.as_mut() {
+            *t *= self.timestamp_base
+        }
+
+        self.stats.num_lines += 1;
+        self.stats.num_fields += line.field_set.len();
+
+        let measurement = line.series.measurement.as_str();
+
+        let (_, batch) = self
+            .batches
+            .raw_entry_mut()
+            .from_key(measurement)
+            .or_insert_with(|| (measurement.to_string(), MutableBatch::new()));
+
+        // TODO: Reuse writer
+        let mut writer = Writer::new(batch, 1);
+        write_line(&mut writer, &line, self.default_time)?;
+        writer.commit();
+
         Ok(())
     }
 
