@@ -94,6 +94,9 @@ pub enum InitError {
 
     #[snafu(display("cannot create preserved catalog: {}", source))]
     CannotCreatePreservedCatalog { source: db::load::Error },
+
+    #[snafu(display("initialization aborted"))]
+    Aborted,
 }
 
 /// The Database startup state machine
@@ -151,6 +154,7 @@ pub enum InitError {
 ///    the error states. We try to recover from all of them. For all except [`DatabaseState::ReplayError`] this is a
 ///    rather cheap operation since we can just retry the actual operation. For [`DatabaseState::ReplayError`] we need
 ///    to dump the potentially half-modified in-memory catalog before retrying.
+/// 3. An operation triggers a transition to [`DatabaseState::Aborted`]
 #[derive(Debug, Clone)]
 pub(crate) enum DatabaseState {
     // Basic initialization sequence states:
@@ -171,6 +175,9 @@ pub(crate) enum DatabaseState {
     CatalogLoadError(DatabaseStateRulesLoaded, Arc<InitError>),
     WriteBufferCreationError(DatabaseStateCatalogLoaded, Arc<InitError>),
     ReplayError(DatabaseStateCatalogLoaded, Arc<InitError>),
+
+    // Database initialization was aborted
+    Aborted(DatabaseStateKnown),
 }
 
 impl std::fmt::Display for DatabaseState {
@@ -192,6 +199,7 @@ impl DatabaseState {
 
     pub(crate) fn state_code(&self) -> DatabaseStateCode {
         match self {
+            DatabaseState::Aborted(_) => DatabaseStateCode::Aborted,
             DatabaseState::Known(_) => DatabaseStateCode::Known,
             DatabaseState::DatabaseObjectStoreFound(_) => {
                 DatabaseStateCode::DatabaseObjectStoreFound
@@ -217,6 +225,7 @@ impl DatabaseState {
     pub(crate) fn error(&self) -> Option<&Arc<InitError>> {
         match self {
             DatabaseState::Known(_)
+            | DatabaseState::Aborted(_)
             | DatabaseState::DatabaseObjectStoreFound(_)
             | DatabaseState::OwnerInfoLoaded(_)
             | DatabaseState::RulesLoaded(_)
@@ -235,6 +244,7 @@ impl DatabaseState {
     pub(crate) fn provided_rules(&self) -> Option<Arc<ProvidedDatabaseRules>> {
         match self {
             DatabaseState::Known(_)
+            | DatabaseState::Aborted(_)
             | DatabaseState::DatabaseObjectStoreFound(_)
             | DatabaseState::DatabaseObjectStoreLookupError(_, _)
             | DatabaseState::NoActiveDatabase(_, _)
@@ -254,6 +264,7 @@ impl DatabaseState {
     pub(crate) fn uuid(&self) -> Option<Uuid> {
         match self {
             DatabaseState::Known(_)
+            | DatabaseState::Aborted(_)
             | DatabaseState::DatabaseObjectStoreFound(_)
             | DatabaseState::DatabaseObjectStoreLookupError(_, _)
             | DatabaseState::NoActiveDatabase(_, _)
@@ -273,6 +284,7 @@ impl DatabaseState {
     pub(crate) fn owner_info(&self) -> Option<management::v1::OwnerInfo> {
         match self {
             DatabaseState::Known(_)
+            | DatabaseState::Aborted(_)
             | DatabaseState::DatabaseObjectStoreFound(_)
             | DatabaseState::DatabaseObjectStoreLookupError(_, _)
             | DatabaseState::NoActiveDatabase(_, _)
@@ -292,6 +304,7 @@ impl DatabaseState {
     pub(crate) fn iox_object_store(&self) -> Option<Arc<IoxObjectStore>> {
         match self {
             DatabaseState::Known(_)
+            | DatabaseState::Aborted(_)
             | DatabaseState::DatabaseObjectStoreLookupError(_, _)
             | DatabaseState::NoActiveDatabase(_, _) => None,
             DatabaseState::DatabaseObjectStoreFound(state)
@@ -321,6 +334,68 @@ impl DatabaseState {
         match self {
             DatabaseState::Initialized(state) => Some(state),
             _ => None,
+        }
+    }
+
+    /// Try to advance to the next state
+    ///
+    /// # Panic
+    ///
+    /// Panics if the database cannot be advanced (already initialized or shutdown)
+    async fn advance(self, shared: &DatabaseShared) -> Self {
+        match self {
+            Self::Known(state)
+            | Self::DatabaseObjectStoreLookupError(state, _)
+            | Self::NoActiveDatabase(state, _) => match state.advance(shared).await {
+                Ok(state) => Self::DatabaseObjectStoreFound(state),
+                Err(InitError::NoActiveDatabase) => {
+                    Self::NoActiveDatabase(state, Arc::new(InitError::NoActiveDatabase))
+                }
+                Err(e) => Self::DatabaseObjectStoreLookupError(state, Arc::new(e)),
+            },
+            Self::DatabaseObjectStoreFound(state) | Self::OwnerInfoLoadError(state, _) => {
+                match state.advance(shared).await {
+                    Ok(state) => Self::OwnerInfoLoaded(state),
+                    Err(e) => Self::OwnerInfoLoadError(state, Arc::new(e)),
+                }
+            }
+            Self::OwnerInfoLoaded(state) | Self::RulesLoadError(state, _) => {
+                match state.advance(shared).await {
+                    Ok(state) => Self::RulesLoaded(state),
+                    Err(e) => Self::RulesLoadError(state, Arc::new(e)),
+                }
+            }
+            Self::RulesLoaded(state) | Self::CatalogLoadError(state, _) => {
+                match state.advance(shared).await {
+                    Ok(state) => DatabaseState::CatalogLoaded(state),
+                    Err(e) => DatabaseState::CatalogLoadError(state, Arc::new(e)),
+                }
+            }
+            Self::CatalogLoaded(state) | Self::WriteBufferCreationError(state, _) => {
+                match state.advance(shared).await {
+                    Ok(state) => DatabaseState::Initialized(state),
+                    Err(e @ InitError::CreateWriteBuffer { .. }) => {
+                        DatabaseState::WriteBufferCreationError(state, Arc::new(e))
+                    }
+                    Err(e) => DatabaseState::ReplayError(state, Arc::new(e)),
+                }
+            }
+            Self::ReplayError(state, _) => {
+                let state2 = state.rollback();
+                match state2.advance(shared).await {
+                    Ok(state2) => match state2.advance(shared).await {
+                        Ok(state2) => Self::Initialized(state2),
+                        Err(e) => Self::ReplayError(state, Arc::new(e)),
+                    },
+                    Err(e) => Self::ReplayError(state, Arc::new(e)),
+                }
+            }
+            Self::Aborted(_) => {
+                panic!("database cannot advance further than shutdown")
+            }
+            Self::Initialized(_) => {
+                panic!("database cannot advance further than initialized")
+            }
         }
     }
 }
@@ -611,6 +686,9 @@ pub(crate) async fn initialize_database(shared: &DatabaseShared) {
     let mut backoff = INIT_BACKOFF;
 
     while !shared.shutdown.is_cancelled() {
+        // Register for abort notification before acquiring freeze handle
+        let abort_notify = shared.abort_initialization.notified();
+
         let handle = shared.state.read().freeze();
         let handle = handle.await;
 
@@ -619,57 +697,34 @@ pub(crate) async fn initialize_database(shared: &DatabaseShared) {
 
         info!(%db_name, %state, "attempting to advance database initialization state");
 
+        match &state {
+            DatabaseState::Initialized(_) => break,
+            DatabaseState::Aborted(_) => {
+                info!(%db_name, "database in aborted state - waiting for transition");
+                // Wait for a transition out of this state
+                let notify = shared.state_notify.notified();
+
+                // Drop handle after registering notification
+                std::mem::drop(handle);
+
+                // Wait for notification
+                notify.await;
+
+                continue;
+            }
+            _ => {}
+        }
+
         // Try to advance to the next state
-        let next_state = match state {
-            DatabaseState::Known(state)
-            | DatabaseState::DatabaseObjectStoreLookupError(state, _)
-            | DatabaseState::NoActiveDatabase(state, _) => match state.advance(shared).await {
-                Ok(state) => DatabaseState::DatabaseObjectStoreFound(state),
-                Err(InitError::NoActiveDatabase) => {
-                    DatabaseState::NoActiveDatabase(state, Arc::new(InitError::NoActiveDatabase))
-                }
-                Err(e) => DatabaseState::DatabaseObjectStoreLookupError(state, Arc::new(e)),
-            },
-            DatabaseState::DatabaseObjectStoreFound(state)
-            | DatabaseState::OwnerInfoLoadError(state, _) => match state.advance(shared).await {
-                Ok(state) => DatabaseState::OwnerInfoLoaded(state),
-                Err(e) => DatabaseState::OwnerInfoLoadError(state, Arc::new(e)),
-            },
-            DatabaseState::OwnerInfoLoaded(state) | DatabaseState::RulesLoadError(state, _) => {
-                match state.advance(shared).await {
-                    Ok(state) => DatabaseState::RulesLoaded(state),
-                    Err(e) => DatabaseState::RulesLoadError(state, Arc::new(e)),
-                }
+        let next_state = tokio::select! {
+            next_state = state.advance(shared) => next_state,
+            _ = abort_notify => {
+                info!(%db_name, "initialization aborted by abort");
+                DatabaseState::Aborted(DatabaseStateKnown{})
             }
-            DatabaseState::RulesLoaded(state) | DatabaseState::CatalogLoadError(state, _) => {
-                match state.advance(shared).await {
-                    Ok(state) => DatabaseState::CatalogLoaded(state),
-                    Err(e) => DatabaseState::CatalogLoadError(state, Arc::new(e)),
-                }
-            }
-            DatabaseState::CatalogLoaded(state)
-            | DatabaseState::WriteBufferCreationError(state, _) => {
-                match state.advance(shared).await {
-                    Ok(state) => DatabaseState::Initialized(state),
-                    Err(e @ InitError::CreateWriteBuffer { .. }) => {
-                        DatabaseState::WriteBufferCreationError(state, Arc::new(e))
-                    }
-                    Err(e) => DatabaseState::ReplayError(state, Arc::new(e)),
-                }
-            }
-            DatabaseState::ReplayError(state, _) => {
-                let state2 = state.rollback();
-                match state2.advance(shared).await {
-                    Ok(state2) => match state2.advance(shared).await {
-                        Ok(state2) => DatabaseState::Initialized(state2),
-                        Err(e) => DatabaseState::ReplayError(state, Arc::new(e)),
-                    },
-                    Err(e) => DatabaseState::ReplayError(state, Arc::new(e)),
-                }
-            }
-            DatabaseState::Initialized(_) => {
-                // Already initialized
-                break;
+            _ = shared.shutdown.cancelled() => {
+                info!(%db_name, "initialization aborted by shutdown");
+                DatabaseState::Aborted(DatabaseStateKnown{})
             }
         };
 

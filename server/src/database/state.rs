@@ -39,4 +39,9 @@ pub(crate) struct DatabaseShared {
 
     /// Notify that the database state has changed
     pub(crate) state_notify: Notify,
+
+    /// Abort initialization if any in progress
+    ///
+    /// Unlike [`Self::shutdown`] this will not terminate the background worker
+    pub(crate) abort_initialization: Notify,
 }

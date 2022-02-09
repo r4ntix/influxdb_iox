@@ -183,6 +183,7 @@ impl Database {
             shutdown: Default::default(),
             state: RwLock::new(Freezable::new(DatabaseState::new_known())),
             state_notify: Default::default(),
+            abort_initialization: Default::default(),
         });
 
         let handle = tokio::spawn(background_worker(Arc::clone(&shared)));
@@ -230,17 +231,13 @@ impl Database {
         Ok(uuid)
     }
 
-    /// Triggers shutdown of this `Database`
-    pub fn shutdown(&self) {
-        let db_name = self.name();
-        info!(%db_name, "database shutting down");
-        self.shared.shutdown.cancel()
-    }
-
     /// Triggers a restart of this `Database` and wait for it to re-initialize
     pub async fn restart(&self) -> Result<(), Arc<InitError>> {
         let db_name = self.name();
         info!(%db_name, "restarting database");
+
+        // Abort any in-progress initialization
+        self.abort_initialization();
 
         let handle = self.shared.state.read().freeze();
         let handle = handle.await;
@@ -254,6 +251,27 @@ impl Database {
         info!(%db_name, "set database state to known");
 
         self.wait_for_init().await
+    }
+
+    /// If the database is in the process of initializing this will trigger a transition
+    /// into the Aborted state. The background loop will no longer try to drive the database
+    /// to the initialized state, and will require intervention.
+    ///
+    /// If the database is already initialized, this will have no effect
+    ///
+    /// This is useful for interrupting the initialization of a database, so that the
+    /// process can be restarted with different parameters
+    pub fn abort_initialization(&self) {
+        let db_name = self.name();
+        info!(%db_name, "aborting database init");
+        self.shared.abort_initialization.notify_waiters();
+    }
+
+    /// Triggers shutdown of this `Database`
+    pub fn shutdown(&self) {
+        let db_name = self.name();
+        info!(%db_name, "database shutting down");
+        self.shared.shutdown.cancel()
     }
 
     /// Waits for the background worker of this `Database` to exit
@@ -412,6 +430,7 @@ impl Database {
                 | DatabaseState::CatalogLoadError(_, e)
                 | DatabaseState::WriteBufferCreationError(_, e)
                 | DatabaseState::ReplayError(_, e) => return Err(Arc::clone(e)),
+                DatabaseState::Aborted(_) => return Err(Arc::new(InitError::Aborted)),
             }
 
             notify.await;
@@ -792,8 +811,10 @@ mod tests {
         sequence::Sequence,
         write_buffer::WriteBufferConnection,
     };
+    use object_store::{ObjectStore, ObjectStoreIntegration, ThrottleConfig};
     use std::time::Duration;
     use std::{num::NonZeroU32, time::Instant};
+    use test_helpers::assert_contains;
     use uuid::Uuid;
     use write_buffer::mock::MockBufferSharedState;
 
@@ -1039,6 +1060,61 @@ mod tests {
             "{:?}",
             err
         );
+    }
+
+    #[tokio::test]
+    async fn database_abort() {
+        test_helpers::maybe_start_logging();
+
+        // Create a throttled object store that will stall the init process
+        let throttle_config = ThrottleConfig {
+            wait_list_with_delimiter_per_call: Duration::from_secs(100),
+            ..Default::default()
+        };
+
+        let store = Arc::new(ObjectStore::new_in_memory_throttled(throttle_config));
+        let application = Arc::new(ApplicationState::new(Arc::clone(&store), None, None));
+
+        let db_config = DatabaseConfig {
+            name: DatabaseName::new("test").unwrap(),
+            location: String::new(),
+            server_id: ServerId::try_from(1).unwrap(),
+            wipe_catalog_on_error: false,
+            skip_replay: false,
+        };
+
+        let database = Database::new(Arc::clone(&application), db_config.clone());
+
+        // Should fail to initialize in a timely manner
+        tokio::time::timeout(Duration::from_millis(10), database.wait_for_init())
+            .await
+            .expect_err("should timeout");
+
+        assert_eq!(database.state_code(), DatabaseStateCode::Known);
+
+        // Abort initialization and wait to be notified of the transition to Aborted
+        let notify = database.shared.state_notify.notified();
+        database.abort_initialization();
+        notify.await;
+
+        assert_eq!(database.state_code(), DatabaseStateCode::Aborted);
+
+        // Disable throttling
+        match &store.integration {
+            ObjectStoreIntegration::InMemoryThrottled(s) => {
+                s.config_mut(|c| *c = Default::default())
+            }
+            _ => unreachable!(),
+        }
+
+        // Restart should recover from aborted state, but will now error due to missing config
+        let error = tokio::time::timeout(Duration::from_secs(1), database.restart())
+            .await
+            .expect("no timeout")
+            .unwrap_err()
+            .to_string();
+
+        assert_contains!(error, "No rules found to load");
     }
 
     #[tokio::test]
