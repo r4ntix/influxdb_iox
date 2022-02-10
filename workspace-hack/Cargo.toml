@@ -20,7 +20,7 @@ bitflags = { version = "1" }
 byteorder = { version = "1", features = ["std"] }
 bytes = { version = "1", features = ["std"] }
 chrono = { version = "0.4", features = ["alloc", "clock", "libc", "oldtime", "serde", "std", "time", "winapi"] }
-digest = { version = "0.9", default-features = false, features = ["alloc", "std"] }
+digest = { version = "0.10", default-features = false, features = ["alloc", "std"] }
 either = { version = "1", features = ["use_std"] }
 futures-channel = { version = "0.3", features = ["alloc", "futures-sink", "sink", "std"] }
 futures-core = { version = "0.3", features = ["alloc", "std"] }
@@ -67,7 +67,7 @@ bitflags = { version = "1" }
 byteorder = { version = "1", features = ["std"] }
 bytes = { version = "1", features = ["std"] }
 cc = { version = "1", default-features = false, features = ["jobserver", "parallel"] }
-digest = { version = "0.9", default-features = false, features = ["alloc", "std"] }
+digest = { version = "0.10", default-features = false, features = ["alloc", "std"] }
 either = { version = "1", features = ["use_std"] }
 futures-channel = { version = "0.3", features = ["alloc", "futures-sink", "sink", "std"] }
 futures-core = { version = "0.3", features = ["alloc", "std"] }
