@@ -315,6 +315,7 @@ mod tests {
             Arc::new(ObjectStore::new_in_memory()),
             None,
             Some(Arc::new(RingBufferTraceCollector::new(5))),
+            None,
         ))
     }
 
@@ -670,8 +671,12 @@ mod tests {
             .await
             .unwrap();
 
-        let server_type =
-            DatabaseServerType::new(application, app_server, &CommonServerState::for_testing());
+        let server_type = DatabaseServerType::new(
+            application,
+            app_server,
+            &CommonServerState::for_testing(),
+            false,
+        );
 
         TestServer::new(Arc::new(server_type))
     }
