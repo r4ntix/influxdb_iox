@@ -1,9 +1,11 @@
 //! Ingest handler
 
 use crate::{
-    data::{IngesterData, IngesterQueryRequest, QueryData, SequencerData},
+    data::{IngesterData, IngesterQueryRequest, IngesterQueryResponse, SequencerData},
     lifecycle::{run_lifecycle_manager, LifecycleConfig, LifecycleManager},
+    querier_handler::prepare_data_to_querier,
 };
+use async_trait::async_trait;
 use db::write_buffer::metrics::{SequencerMetrics, WriteBufferIngestMetrics};
 use futures::StreamExt;
 use iox_catalog::interface::{Catalog, KafkaPartition, KafkaTopic, Sequencer, SequencerId};
@@ -50,9 +52,13 @@ const INGEST_PAUSE_DELAY: Duration = Duration::from_millis(100);
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// The [`IngestHandler`] handles all ingest from kafka, persistence and queries
+#[async_trait]
 pub trait IngestHandler {
     /// Return results from the in-memory data that match this query
-    fn query(&self, request: IngesterQueryRequest) -> Result<QueryData>;
+    async fn query(
+        &self,
+        request: IngesterQueryRequest,
+    ) -> Result<IngesterQueryResponse, crate::querier_handler::Error>;
 }
 
 /// Implementation of the `IngestHandler` trait to ingest from kafka and manage persistence and answer queries
@@ -152,9 +158,13 @@ impl IngestHandlerImpl {
     }
 }
 
+#[async_trait]
 impl IngestHandler for IngestHandlerImpl {
-    fn query(&self, _request: IngesterQueryRequest) -> Result<QueryData> {
-        todo!()
+    async fn query(
+        &self,
+        request: IngesterQueryRequest,
+    ) -> Result<IngesterQueryResponse, crate::querier_handler::Error> {
+        prepare_data_to_querier(&request).await
     }
 }
 

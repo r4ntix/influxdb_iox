@@ -52,7 +52,9 @@ pub enum Error {
     },
 
     #[snafu(display("Error while performing query: {}", source))]
-    Query { source: crate::handler::Error },
+    Query {
+        source: crate::querier_handler::Error,
+    },
 }
 
 impl From<Error> for tonic::Status {
@@ -127,6 +129,7 @@ impl<I: IngestHandler + Send + Sync + 'static> Flight for FlightService<I> {
         let _query_response = self
             .ingest_handler
             .query(query_request)
+            .await
             .context(QuerySnafu)?;
 
         let output = futures::stream::empty();

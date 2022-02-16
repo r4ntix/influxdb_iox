@@ -1011,11 +1011,6 @@ impl IngesterQueryResponse {
     }
 }
 
-/// Struct to manage returning data to a query request
-#[derive(Debug)]
-#[allow(missing_copy_implementations)]
-pub struct QueryData {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
