@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 use time::{Time, TimeProvider};
+use tokio_util::sync::CancellationToken;
 
 /// The lifecycle manager keeps track of the size and age of partitions across all sequencers.
 /// It triggers persistence based on keeping total memory usage around a set amount while
@@ -238,10 +239,19 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(1);
 pub(crate) async fn run_lifecycle_manager<P: Persister>(
     manager: Arc<LifecycleManager>,
     persister: Arc<P>,
+    shutdown: CancellationToken,
 ) {
     loop {
+        if shutdown.is_cancelled() {
+            return;
+        }
+
         manager.maybe_persist(&persister).await;
-        tokio::time::sleep(CHECK_INTERVAL).await;
+
+        tokio::select!(
+            _ = tokio::time::sleep(CHECK_INTERVAL) => {},
+            _ = shutdown.cancelled() => {return;},
+        );
     }
 }
 

@@ -4,8 +4,13 @@ use crate::{
     data::{IngesterData, IngesterQueryRequest, QueryData, SequencerData},
     lifecycle::{run_lifecycle_manager, LifecycleConfig, LifecycleManager},
 };
+use async_trait::async_trait;
 use db::write_buffer::metrics::{SequencerMetrics, WriteBufferIngestMetrics};
-use futures::StreamExt;
+use futures::{
+    future::{BoxFuture, Shared},
+    stream::FuturesUnordered,
+    FutureExt, StreamExt, TryFutureExt,
+};
 use iox_catalog::interface::{Catalog, KafkaPartition, KafkaTopic, Sequencer, SequencerId};
 use object_store::ObjectStore;
 use observability_deps::tracing::{debug, info, warn};
@@ -18,7 +23,8 @@ use std::{
     time::{Duration, Instant},
 };
 use time::SystemProvider;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinError, JoinHandle};
+use tokio_util::sync::CancellationToken;
 use trace::span::SpanRecorder;
 use write_buffer::core::{WriteBufferReading, WriteBufferStreamHandler};
 
@@ -50,9 +56,26 @@ const INGEST_PAUSE_DELAY: Duration = Duration::from_millis(100);
 pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// The [`IngestHandler`] handles all ingest from kafka, persistence and queries
-pub trait IngestHandler {
+#[async_trait]
+pub trait IngestHandler: Send + Sync {
     /// Return results from the in-memory data that match this query
     fn query(&self, request: IngesterQueryRequest) -> Result<QueryData>;
+
+    /// Wait until the handler finished  to shutdown.
+    ///
+    /// Use [`shutdown`](Self::shutdown) to trigger a shutdown.
+    async fn join(&self);
+
+    /// Shut down background workers.
+    fn shutdown(&self);
+}
+
+/// A [`JoinHandle`] that can be pulled from multiple sites.
+type SharedJoinHandle = Shared<BoxFuture<'static, Result<(), Arc<JoinError>>>>;
+
+/// Convert a [`JoinHandle`] into a [`SharedJoinHandle`].
+fn shared_handle(handle: JoinHandle<()>) -> SharedJoinHandle {
+    handle.map_err(Arc::new).boxed().shared()
 }
 
 /// Implementation of the `IngestHandler` trait to ingest from kafka and manage persistence and answer queries
@@ -60,10 +83,16 @@ pub struct IngestHandlerImpl {
     /// Kafka Topic assigned to this ingester
     #[allow(dead_code)]
     kafka_topic: KafkaTopic,
+
     /// Future that resolves when the background worker exits
-    join_handles: Vec<JoinHandle<()>>,
+    join_handles: Vec<SharedJoinHandle>,
+
+    /// A token that is used to trigger shutdown of the background worker
+    shutdown: CancellationToken,
+
     /// The cache and buffered data for the ingester
     data: Arc<IngesterData>,
+
     /// The lifecycle manager, keeping state of partitions across all sequencers
     lifecycle_manager: Arc<LifecycleManager>,
 }
@@ -110,16 +139,18 @@ impl IngestHandlerImpl {
             Arc::new(SystemProvider::new()),
         ));
         let manager = Arc::clone(&lifecycle_manager);
+        let shutdown = CancellationToken::new();
+        let shutdown_captured = shutdown.clone();
         let handle = tokio::task::spawn(async move {
-            run_lifecycle_manager(manager, persister).await;
+            run_lifecycle_manager(manager, persister, shutdown_captured).await;
         });
         info!(
             "ingester handler and lifecycle started with config {:?}",
             lifecycle_config
         );
 
-        let mut join_handles = Vec::with_capacity(sequencer_states.len());
-        join_handles.push(handle);
+        let mut join_handles = Vec::with_capacity(sequencer_states.len() + 1);
+        join_handles.push(shared_handle(handle));
 
         for (kafka_partition, sequencer) in sequencer_states {
             let metrics = ingest_metrics.new_sequencer_metrics(kafka_partition.get() as u32);
@@ -131,7 +162,7 @@ impl IngestHandlerImpl {
                 .await
                 .context(WriteBufferSnafu)?;
 
-            join_handles.push(tokio::task::spawn(stream_in_sequenced_entries(
+            let handle = tokio::task::spawn(stream_in_sequenced_entries(
                 Arc::clone(&lifecycle_manager),
                 ingester_data,
                 sequencer.id,
@@ -140,28 +171,54 @@ impl IngestHandlerImpl {
                 Arc::clone(&write_buffer),
                 stream_handler,
                 metrics,
-            )));
+                shutdown.clone(),
+            ));
+            join_handles.push(shared_handle(handle));
         }
 
         Ok(Self {
             data,
             kafka_topic: topic,
             join_handles,
+            shutdown,
             lifecycle_manager,
         })
     }
 }
 
+#[async_trait]
 impl IngestHandler for IngestHandlerImpl {
     fn query(&self, _request: IngesterQueryRequest) -> Result<QueryData> {
         todo!()
+    }
+
+    async fn join(&self) {
+        let mut unordered: FuturesUnordered<_> = self.join_handles.iter().cloned().collect();
+
+        while let Some(e) = unordered.next().await {
+            e.unwrap();
+            if !self.shutdown.is_cancelled() {
+                panic!("Background worker exited early!");
+            }
+        }
+    }
+
+    fn shutdown(&self) {
+        self.shutdown.cancel();
     }
 }
 
 impl Drop for IngestHandlerImpl {
     fn drop(&mut self) {
-        for h in &mut self.join_handles {
-            h.abort();
+        if !self.shutdown.is_cancelled() {
+            warn!("IngestHandlerImpl dropped without calling shutdown()");
+            self.shutdown.cancel();
+        }
+
+        for handle in &self.join_handles {
+            if handle.clone().now_or_never().is_none() {
+                warn!("IngestHandlerImpl dropped without waiting for worker termination");
+            }
         }
     }
 }
@@ -181,12 +238,19 @@ async fn stream_in_sequenced_entries(
     write_buffer: Arc<dyn WriteBufferReading>,
     mut write_buffer_stream: Box<dyn WriteBufferStreamHandler>,
     mut metrics: SequencerMetrics,
+    shutdown: CancellationToken,
 ) {
     let mut watermark_last_updated: Option<Instant> = None;
     let mut watermark = 0_u64;
     let mut stream = write_buffer_stream.stream().await;
 
-    while let Some(db_write_result) = stream.next().await {
+    while let Some(db_write_result) =
+        tokio::select!(next = stream.next() => next, _ = shutdown.cancelled() => {return})
+    {
+        if shutdown.is_cancelled() {
+            return;
+        }
+
         // maybe update sequencer watermark
         // We are not updating this watermark every round because asking the sequencer for that watermark can be
         // quite expensive.
