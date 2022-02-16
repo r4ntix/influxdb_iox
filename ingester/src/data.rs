@@ -3,6 +3,7 @@
 use crate::compact::compact_persisting_batch;
 use crate::lifecycle::LifecycleManager;
 use crate::persist::persist;
+use crate::querier_handler::query;
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use chrono::{format::StrftimeItems, TimeZone, Utc};
@@ -127,6 +128,7 @@ impl IngesterData {
                 sequencer_id,
                 self.catalog.as_ref(),
                 lifecycle_manager,
+                &self.exec,
             )
             .await
     }
@@ -308,6 +310,7 @@ impl SequencerData {
         sequencer_id: SequencerId,
         catalog: &dyn Catalog,
         lifecycle_manager: &LifecycleManager,
+        executor: &Executor,
     ) -> Result<bool> {
         let namespace_data = match self.namespace(dml_operation.namespace()) {
             Some(d) => d,
@@ -318,7 +321,13 @@ impl SequencerData {
         };
 
         namespace_data
-            .buffer_operation(dml_operation, sequencer_id, catalog, lifecycle_manager)
+            .buffer_operation(
+                dml_operation,
+                sequencer_id,
+                catalog,
+                lifecycle_manager,
+                executor,
+            )
             .await
     }
 
@@ -376,6 +385,7 @@ impl NamespaceData {
         sequencer_id: SequencerId,
         catalog: &dyn Catalog,
         lifecycle_manager: &LifecycleManager,
+        executor: &Executor,
     ) -> Result<bool> {
         let sequence_number = dml_operation
             .meta()
@@ -417,7 +427,14 @@ impl NamespaceData {
                 };
 
                 table_data
-                    .buffer_delete(delete.predicate(), sequencer_id, sequence_number, catalog)
+                    .buffer_delete(
+                        table_name,
+                        delete.predicate(),
+                        sequencer_id,
+                        sequence_number,
+                        catalog,
+                        executor,
+                    )
                     .await?;
 
                 // don't pause writes since deletes don't count towards memory limits
@@ -539,10 +556,12 @@ impl TableData {
 
     async fn buffer_delete(
         &self,
+        table_name: &str,
         predicate: &DeletePredicate,
         sequencer_id: SequencerId,
         sequence_number: SequenceNumber,
         catalog: &dyn Catalog,
+        executor: &Executor,
     ) -> Result<()> {
         let min_time = Timestamp::new(predicate.range.start());
         let max_time = Timestamp::new(predicate.range.end());
@@ -563,7 +582,7 @@ impl TableData {
 
         let partitions = self.partition_data.read();
         for data in partitions.values() {
-            data.buffer_tombstone(tombstone.clone());
+            data.buffer_tombstone(executor, table_name, tombstone.clone()).await;
         }
 
         Ok(())
@@ -646,9 +665,9 @@ impl PartitionData {
         })
     }
 
-    fn buffer_tombstone(&self, tombstone: Tombstone) {
+   async fn buffer_tombstone(&self, executor: &Executor, table_name: &str, tombstone: Tombstone) {
         let mut data = self.inner.write();
-        data.add_tombstone(tombstone);
+        data.add_tombstone(executor, table_name, tombstone).await;
     }
 }
 
@@ -680,9 +699,9 @@ pub struct DataBuffer {
     pub buffer: Vec<BufferBatch>,
 
     /// Buffer of tombstones whose time range may overlap with this partition.
-    /// All tombstones were already apllied to corresponding snapshots. This list 
+    /// All tombstones were already apllied to corresponding snapshots. This list
     /// only keep the ones that come during persisting. The reason
-    /// we keep them becasue if a query comes, we need to apply these tombstones 
+    /// we keep them becasue if a query comes, we need to apply these tombstones
     /// on the persiting data before sending it to the Querier
     /// When the `persiting` is done and removed, this list will get empty, too
     pub deletes_during_persisting: Vec<Tombstone>,
@@ -711,17 +730,65 @@ pub struct DataBuffer {
 }
 
 impl DataBuffer {
-
     /// Add a new tombstones into the DataBuffer
-    pub fn add_tombstone(&mut self, tombstone: Tombstone) {
+    /// All the data in the `buffer` and `snapshots` will be replaced with on tombstone-applied snapshot
+    /// The tombstone is only add in the `deletes_during_persisting` if the `persisting` exists
+    pub async fn add_tombstone(
+        &mut self,
+        executor: &Executor,
+        table_name: &str,
+        tombstone: Tombstone,
+    ) {
+        // Keep this tombstone if some data is being  persisted
+        if self.persisting.is_some() {
+            self.deletes_during_persisting.push(tombstone.clone());
+        }
 
-        // Steps:
-        // 1. Snapshot the `buffer`
-        // 2. Make a QueryableBatch for all snapshots + the given tombstone
-        // 3. Run query on the QueryableBatch to apply the  tombstone. Merge all result record batches into one record batch
-        // 4. Make a snapshot for the output record batch of step 3. Min sequence is the snapshosts' min sequnce, max sequence is the tombstone sequence
-        // 5. Replace all snapshots with the one from step 4
-        // 6. If `persisting` exists, add the tomstone into `deletes_during_persisting`
+        // Make a QueryableBatch for all buffer + snapshots + the given tombstone
+        let max_sequencer_number = tombstone.sequence_number;
+        let query_batch = self.snapshot_to_queryable_batch(table_name, Some(tombstone));
+        let (min_sequencer_number, _) = query_batch.min_max_sequence_numbers();
+        assert!(min_sequencer_number < max_sequencer_number);
+
+        // Run query on the QueryableBatch to apply the tombstone.
+        let stream = match query(
+            executor,
+            Arc::new(query_batch),
+            Predicate::default(),
+            Selection::All,
+        )
+        .await
+        {
+            Err(e) => {
+                // this should never error out. if it does, we need to crash hard so
+                // someone can take a look.
+                panic!("unable to apply tombstones on snapshots: {:?}", e);
+            }
+            Ok(stream) => stream,
+        };
+        let record_batches = match datafusion::physical_plan::common::collect(stream).await {
+            Err(e) => {
+                // this should never error out. if it does, we need to crash hard so
+                // someone can take a look.
+                panic!("unable to collect record batches: {:?}", e);
+            }
+            Ok(batches) => batches,
+        };
+
+        // Merge all result record batches into one record batch
+        // and make a snapshot for it
+        if !record_batches.is_empty() {
+            let record_batch = RecordBatch::concat(&record_batches[0].schema(), &record_batches)
+                .unwrap_or_else(|e| {
+                    panic!("unable to concat record batches: {:?}", e);
+                });
+            let snapshot = SnapshotBatch {
+                min_sequencer_number,
+                max_sequencer_number,
+                data: Arc::new(record_batch),
+            };
+            self.snapshots.push(Arc::new(snapshot));
+        }
     }
 
     /// Move `BufferBatch`es to a `SnapshotBatch`.
@@ -764,6 +831,26 @@ impl DataBuffer {
         self.snapshots.is_empty() && self.buffer.is_empty() && self.persisting.is_none()
     }
 
+    /// Snapshots the buffer and make a QueryableBatch for all the snapshots
+    /// Both buffer and snapshots will be empty after this
+    pub fn snapshot_to_queryable_batch(
+        &mut self,
+        table_name: &str,
+        tombstone: Option<Tombstone>,
+    ) -> QueryableBatch {
+        self.snapshot()
+            .expect("This mutable batch snapshot error should be impossible.");
+
+        let mut data = vec![];
+        std::mem::swap(&mut data, &mut self.snapshots);
+
+        let mut tombstones = vec![];
+        if let Some(tombstone) = tombstone {
+            tombstones.push(tombstone);
+        }
+        QueryableBatch::new(table_name, data, tombstones)
+    }
+
     /// Snapshots the buffer and moves snapshots over to the `PersistingBatch`. Returns error
     /// if there is already a persisting batch.
     pub fn snapshot_to_persisting(
@@ -777,15 +864,7 @@ impl DataBuffer {
             panic!("Unable to snapshot while persisting. This is an unexpected state.")
         }
 
-        self.snapshot()
-            .expect("This mutable batch snapshot error should be impossible.");
-
-        let mut data = vec![];
-        std::mem::swap(&mut data, &mut self.snapshots);
-        let mut deletes = vec![];
-        std::mem::swap(&mut deletes, &mut self.deletes);
-
-        let queryable_batch = QueryableBatch::new(table_name, data, deletes);
+        let queryable_batch = self.snapshot_to_queryable_batch(table_name, None);
 
         let persisting_batch = Arc::new(PersistingBatch {
             sequencer_id,
