@@ -28,6 +28,7 @@ parking_lot = "0.12"
 parquet = "9.0"
 parquet_file = { path = "../parquet_file" }
 observability_deps = { path = "../observability_deps" }
+pin-project = "1.0"
 predicate = { path = "../predicate" }
 prost = "0.9"
 query = { path = "../query" }
