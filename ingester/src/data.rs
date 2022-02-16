@@ -466,6 +466,8 @@ impl NamespaceData {
             if let Some(p) = partition {
                 let mut data = p.inner.write();
                 data.persisting = None;
+                // clear the deletes kept for this persisting batch
+                data.deletes_after_creating_persisting.clear();
                 if data.is_empty() {
                     partitions.remove(partition_key);
                 }
@@ -676,10 +678,15 @@ pub struct DataBuffer {
     pub buffer: Vec<BufferBatch>,
 
     /// Buffer of tombstones whose time range may overlap with this partition.
-    /// These tombstone first will be written into the Catalog and then here.
-    /// When a persist is called, these tombstones will be moved into the
-    /// PersistingBatch to get applied in those data.
-    pub deletes: Vec<Tombstone>,
+    /// All tombstones were already added in corresponding snapshots. This list 
+    /// only keep the ones that come when a persting is happening. The reason
+    /// we keep them becasue if a query comes, we need to pack these tombstones 
+    /// with the persiting data and send to the Querier after some pre-processing
+    /// work to filter unecessary data. The filter work will apply these tombstones
+    /// but we still need to send them back to the Querier for the Querier to 
+    /// apply those tombstones on data read from OS.
+    /// When the `persiting` is done and removed, this list will get empty, too
+    pub deletes_after_creating_persisting: Vec<Tombstone>,
 
     /// Data in `buffer` will be moved to a `snapshot` when one of these happens:
     ///  . A background persist is called
@@ -705,6 +712,16 @@ pub struct DataBuffer {
 }
 
 impl DataBuffer {
+
+    /// Add new tombstones into the DataBuffer
+    pub fn add_tombstones(&mut self, tombstones: Vec<Tombstone>) {
+
+        // Steps:
+        // 1. Add the given the tombstone into exiting sanpshots
+        // 2. Snapshot the `buffer` - need to modify the snapshot function to add the given tombstones in the sanpshot
+        // 3. If `persisting` is not empty, add the give tomstones into `deletes_after_creating_persisting`
+    }
+
     /// Move `BufferBatch`es to a `SnapshotBatch`.
     pub fn snapshot(&mut self) -> Result<(), mutable_batch::Error> {
         if !self.buffer.is_empty() {
@@ -829,6 +846,8 @@ pub struct SnapshotBatch {
     pub max_sequencer_number: SequenceNumber,
     /// Data of its comebined BufferBatches kept in one RecordBatch
     pub data: Arc<RecordBatch>,
+    /// Tomstones to be applied on data
+    pub deletes: Vec<Tombstone>,
 }
 
 impl SnapshotBatch {
@@ -877,17 +896,18 @@ pub struct PersistingBatch {
     pub object_store_id: Uuid,
 
     /// data
-    pub data: Arc<QueryableBatch>,
+    pub data: Vec<Arc<QueryableBatch>>,
 }
 
 /// Queryable data used for both query and persistence
 #[derive(Debug, PartialEq)]
 pub struct QueryableBatch {
     /// data
-    pub data: Vec<Arc<SnapshotBatch>>,
+    pub data: Arc<SnapshotBatch>,  // No longer a vector because each SnapshotBatch may inlcude different tombstones.
+                                   // We can keep this a vector of snapshots with the same tombstones but I do not think it is that critical
 
     /// Tomstones to be applied on data
-    pub deletes: Vec<Tombstone>,
+    // pub deletes: Vec<Tombstone>,  // No longer need this because they are defined in the SanpshotBatch
 
     /// Delete predicates of the tombstones
     /// Note: this is needed here to return its reference for a trait function
