@@ -29,6 +29,67 @@ message IngesterQueryRequest {
   int32 sequencer_id = 8;
 }
 
+// Metadata that the ingester provides to the query service along with the results. Serialized
+// in the FlightData's app_metadata for the schema that is returned as the first item from the
+// Arrow Flight doGet request.
+message IngesterQueryResponseMetadata {
+  // Delete predicates
+  repeated DeletePredicate delete_predicates = 1;
+
+  // Max persisted sequence number of the table, if it is larger than the IngesterQueryRequest's
+  // greater_than_sequence_number
+  optional int64 max_sequencer_number = 2;
+}
+
+// A subset of Predicate used for deletes.
+// Serialization of data_types::delete_predicate::DeletePredicate.
+message DeletePredicate {
+  // Optional timestamp range: only rows within this range are included in results. Other rows are
+  // excluded.
+  optional TimestampRange range = 1;
+
+  // Optional arbitrary predicates, represented as list of expressions applied a logical
+  // conjunction (aka they are 'AND'ed together). Only rows that evaluate to TRUE for all these
+  // expressions should be returned. Other rows are excluded from the results.
+  repeated DeleteExpr exprs = 5;
+}
+
+// Single expression to be used as parts of a delete predicate.
+//
+// Only very simple expression of the type `<column> <op> <scalar>` are supported.
+message DeleteExpr {
+  // Column (w/o table name).
+  string column = 1;
+
+  // Operator.
+  DeleteOp op = 2;
+
+  // Scalar value.
+  DeleteScalar scalar = 3;
+}
+
+// Binary operator that can be evaluated on a column and a scalar value.
+enum DeleteOp {
+  // Unspecified operator, will result in an error.
+  DELETE_OP_UNSPECIFIED = 0;
+
+  // Strict equality (`=`).
+  DELETE_OP_EQ = 1;
+
+  // Inequality (`!=`).
+  DELETE_OP_NE = 2;
+}
+
+// Scalar value of a certain type.
+message DeleteScalar {
+  oneof value {
+    bool value_bool = 1;
+    int64 value_i64 = 2;
+    double value_f64 = 3;
+    string value_string = 4;
+  }
+}
+
 // Serialization of `predicate::predicate::Predicate` that contains DataFusion `Expr`s
 message Predicate {
   // Optional field restriction. If any are present, restricts the results to only tables which

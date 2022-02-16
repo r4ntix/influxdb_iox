@@ -72,6 +72,9 @@ pub enum Error {
 
     #[snafu(display("Error while streaming query results: {}", source))]
     QueryStream { source: ArrowError },
+
+    #[snafu(display("Error during protobuf serialization: {}", source))]
+    Serialization { source: prost::EncodeError },
 }
 
 impl From<Error> for tonic::Status {
@@ -88,7 +91,8 @@ impl From<Error> for tonic::Status {
             }
             Error::Dictionary { .. }
             | Error::InvalidRecordBatch { .. }
-            | Error::QueryStream { .. } => warn!(?err, msg),
+            | Error::QueryStream { .. }
+            | Error::Serialization { .. } => warn!(?err, msg),
         }
         err.to_status()
     }
@@ -105,7 +109,8 @@ impl Error {
             Self::Query { .. }
             | Self::InvalidRecordBatch { .. }
             | Self::Dictionary { .. }
-            | Self::QueryStream { .. } => Status::internal(self.to_string()),
+            | Self::QueryStream { .. }
+            | Self::Serialization { .. } => Status::internal(self.to_string()),
         }
     }
 }
@@ -226,16 +231,32 @@ struct GetStream {
 
 impl GetStream {
     async fn new(query_response: IngesterQueryResponse) -> Result<Self, tonic::Status> {
+        let IngesterQueryResponse {
+            mut data,
+            schema,
+            delete_predicates,
+            max_sequencer_number,
+        } = query_response;
+
         // setup channel
         let (mut tx, rx) = futures::channel::mpsc::channel::<Result<FlightData, tonic::Status>>(1);
 
         // get schema
-        let schema = Arc::new(optimize_schema(&query_response.schema.as_arrow()));
-
-        // setup stream
+        let schema = Arc::new(optimize_schema(&schema.as_arrow()));
         let options = arrow::ipc::writer::IpcWriteOptions::default();
-        let schema_flight_data = SchemaAsIpc::new(&schema, &options).into();
-        let mut stream_record_batches = query_response.data;
+        let mut schema_flight_data: FlightData = SchemaAsIpc::new(&schema, &options).into();
+
+        // Add delete predicates and max_sequencer_number to app metadata
+        let mut bytes = bytes::BytesMut::new();
+        let app_metadata = proto::IngesterQueryResponseMetadata {
+            delete_predicates: delete_predicates
+                .iter()
+                .map(|p| p.as_ref().into())
+                .collect(),
+            max_sequencer_number: max_sequencer_number.map(|n| n.get()),
+        };
+        prost::Message::encode(&app_metadata, &mut bytes).context(SerializationSnafu)?;
+        schema_flight_data.app_metadata = bytes.to_vec();
 
         let join_handle = tokio::spawn(async move {
             if tx.send(Ok(schema_flight_data)).await.is_err() {
@@ -243,7 +264,7 @@ impl GetStream {
                 return;
             }
 
-            while let Some(batch_or_err) = stream_record_batches.next().await {
+            while let Some(batch_or_err) = data.next().await {
                 match batch_or_err {
                     Ok(batch) => {
                         match optimize_record_batch(&batch, Arc::clone(&schema)) {
