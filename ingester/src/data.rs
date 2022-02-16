@@ -247,6 +247,8 @@ impl Persister for IngesterData {
         // the failures that might happen where we just want to keep retrying it.
         // TODO: clean this up when updating the min_sequence_number is added in.
         let parquet_file = iox_meta.to_parquet_file();
+        // TODO: since we no longer need the processed_tombstones here,
+        //       this loop will be replaced with update parquet file only
         loop {
             match self.catalog.start_transaction().await {
                 Ok(mut txn) => {
@@ -467,7 +469,7 @@ impl NamespaceData {
                 let mut data = p.inner.write();
                 data.persisting = None;
                 // clear the deletes kept for this persisting batch
-                data.deletes_after_creating_persisting.clear();
+                data.deletes_during_persisting.clear();
                 if data.is_empty() {
                     partitions.remove(partition_key);
                 }
@@ -646,7 +648,7 @@ impl PartitionData {
 
     fn buffer_tombstone(&self, tombstone: Tombstone) {
         let mut data = self.inner.write();
-        data.deletes.push(tombstone);
+        data.add_tombstone(tombstone);
     }
 }
 
@@ -678,15 +680,12 @@ pub struct DataBuffer {
     pub buffer: Vec<BufferBatch>,
 
     /// Buffer of tombstones whose time range may overlap with this partition.
-    /// All tombstones were already added in corresponding snapshots. This list 
-    /// only keep the ones that come when a persting is happening. The reason
-    /// we keep them becasue if a query comes, we need to pack these tombstones 
-    /// with the persiting data and send to the Querier after some pre-processing
-    /// work to filter unecessary data. The filter work will apply these tombstones
-    /// but we still need to send them back to the Querier for the Querier to 
-    /// apply those tombstones on data read from OS.
+    /// All tombstones were already apllied to corresponding snapshots. This list 
+    /// only keep the ones that come during persisting. The reason
+    /// we keep them becasue if a query comes, we need to apply these tombstones 
+    /// on the persiting data before sending it to the Querier
     /// When the `persiting` is done and removed, this list will get empty, too
-    pub deletes_after_creating_persisting: Vec<Tombstone>,
+    pub deletes_during_persisting: Vec<Tombstone>,
 
     /// Data in `buffer` will be moved to a `snapshot` when one of these happens:
     ///  . A background persist is called
@@ -713,13 +712,16 @@ pub struct DataBuffer {
 
 impl DataBuffer {
 
-    /// Add new tombstones into the DataBuffer
-    pub fn add_tombstones(&mut self, tombstones: Vec<Tombstone>) {
+    /// Add a new tombstones into the DataBuffer
+    pub fn add_tombstone(&mut self, tombstone: Tombstone) {
 
         // Steps:
-        // 1. Add the given the tombstone into exiting sanpshots
-        // 2. Snapshot the `buffer` - need to modify the snapshot function to add the given tombstones in the sanpshot
-        // 3. If `persisting` is not empty, add the give tomstones into `deletes_after_creating_persisting`
+        // 1. Snapshot the `buffer`
+        // 2. Make a QueryableBatch for all snapshots + the given tombstone
+        // 3. Run query on the QueryableBatch to apply the  tombstone. Merge all result record batches into one record batch
+        // 4. Make a snapshot for the output record batch of step 3. Min sequence is the snapshosts' min sequnce, max sequence is the tombstone sequence
+        // 5. Replace all snapshots with the one from step 4
+        // 6. If `persisting` exists, add the tomstone into `deletes_during_persisting`
     }
 
     /// Move `BufferBatch`es to a `SnapshotBatch`.
@@ -846,8 +848,6 @@ pub struct SnapshotBatch {
     pub max_sequencer_number: SequenceNumber,
     /// Data of its comebined BufferBatches kept in one RecordBatch
     pub data: Arc<RecordBatch>,
-    /// Tomstones to be applied on data
-    pub deletes: Vec<Tombstone>,
 }
 
 impl SnapshotBatch {
@@ -896,18 +896,17 @@ pub struct PersistingBatch {
     pub object_store_id: Uuid,
 
     /// data
-    pub data: Vec<Arc<QueryableBatch>>,
+    pub data: Arc<QueryableBatch>,
 }
 
 /// Queryable data used for both query and persistence
 #[derive(Debug, PartialEq)]
 pub struct QueryableBatch {
     /// data
-    pub data: Arc<SnapshotBatch>,  // No longer a vector because each SnapshotBatch may inlcude different tombstones.
-                                   // We can keep this a vector of snapshots with the same tombstones but I do not think it is that critical
+    pub data: Vec<Arc<SnapshotBatch>>,
 
     /// Tomstones to be applied on data
-    // pub deletes: Vec<Tombstone>,  // No longer need this because they are defined in the SanpshotBatch
+    pub deletes: Vec<Tombstone>,
 
     /// Delete predicates of the tombstones
     /// Note: this is needed here to return its reference for a trait function

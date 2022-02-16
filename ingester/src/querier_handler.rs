@@ -51,13 +51,12 @@ pub async fn prepare_data_to_querier(
     //     3.1. Snapshot the buffer by invoking DataBuffer::snapshot
     //          This snapshot will not inlcude any tombstones because if there are tomstones
     //          right before this, it would trigger the sanpshot creation already
-    //     3.2. Converting all N snapshots to N QueryableBatches
-    //     3.3. Get PersistingBatch's M QueryableBatches and add just-arrived tomstones in the list `deletes_after_creating_persisting` if any
+    //     3.2. Converting all snapshots to a QueryableBatch that won't have any tombstones.
+    //     3.3. Get PersistingBatch's QueryableBatches and add tomstones in the list `deletes_during_persisting` if any
     //     3.4. For each QueryableBatch produced in 3.2 and 3.3, invoke the avaialble `query` function to filter data per request.
     //          . The request's columns, time range, and predicates will be applied at this step. Each will return a RecordBatch.
-    //          . The delete predicates of the QueryableBatch are added into the returning delete_predicates without duplicates
     //     3.5. Put all RecordBatches in a stream
-    //  4. The stream and the delete_predicates are a part of the returned result
+    //  4. The stream is a part of the returned result
 
     Ok(IngesterQueryResponse::new(None, vec![], None))
 }
