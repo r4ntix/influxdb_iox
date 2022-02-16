@@ -173,7 +173,7 @@ fn normalize_predicate(
                 // column projection set.
                 .and_then(|e| rewrite_field_column_references(&mut field_projections, e))
                 // apply IOx specific rewrites (that unlock other simplifications)
-                .and_then(|e| rewrite::rewrite(e))
+                .and_then(rewrite::rewrite)
                 // Call the core DataFusion simplification logic
                 .and_then(|e| {
                     if let Some(schema) = &schema {
@@ -184,7 +184,7 @@ fn normalize_predicate(
                         Ok(e)
                     }
                 })
-                .and_then(|e| rewrite::simplify_predicate(e))
+                .and_then(rewrite::simplify_predicate)
         })
         .collect::<DataFusionResult<Vec<_>>>()?;
     // Store any field value (`_value`) expressions on the `Predicate`.
