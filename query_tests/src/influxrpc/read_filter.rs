@@ -207,7 +207,7 @@ async fn test_read_filter_invalid_predicate_case() {
         .build();
     let predicate = InfluxRpcPredicate::new(None, predicate);
 
-    let expected_error = "should error not panic";
+    let expected_error = "gRPC planner got error creating predicates: Error during planning: 'Utf8 = Int32' can't be evaluated because there isn't a common type to coerce the types to";
 
     run_read_filter_error_case(TwoMeasurements {}, predicate, expected_error).await;
 }
