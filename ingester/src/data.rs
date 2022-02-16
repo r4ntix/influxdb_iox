@@ -7,6 +7,7 @@ use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use chrono::{format::StrftimeItems, TimeZone, Utc};
 use data_types::delete_predicate::DeletePredicate;
+use datafusion::physical_plan::SendableRecordBatchStream;
 use dml::DmlOperation;
 use generated_types::{
     google::{FieldViolation, FieldViolationExt},
@@ -23,13 +24,9 @@ use observability_deps::tracing::{error, warn};
 use parking_lot::RwLock;
 use predicate::Predicate;
 use query::exec::Executor;
-use schema::selection::Selection;
-use schema::TIME_COLUMN_NAME;
+use schema::{selection::Selection, Schema, TIME_COLUMN_NAME};
 use snafu::{OptionExt, ResultExt, Snafu};
-use std::convert::TryFrom;
-use std::ops::DerefMut;
-use std::time::Duration;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, convert::TryFrom, ops::DerefMut, sync::Arc, time::Duration};
 use time::SystemProvider;
 use uuid::Uuid;
 
@@ -979,12 +976,12 @@ impl TryFrom<proto::IngesterQueryRequest> for IngesterQueryRequest {
 }
 
 /// Response sending to the query service per its request defined in IngesterQueryRequest
-#[derive(Debug, PartialEq)]
 pub struct IngesterQueryResponse {
-    // TODO: talk with Carol to see if it is better to keep this a stream to record batches
-    //       or a vector  of record bacthes  #3640 & #3754
-    /// Responding Data
-    pub data: Option<RecordBatch>,
+    /// Stream of RecordBatch results that match the requested query
+    pub data: SendableRecordBatchStream,
+
+    /// The schema of the record batches
+    pub schema: Schema,
 
     /// Delete predicates
     /// Note: this delete prdicates are just for the Querier to apply to the persisted data it reads from Parquet File.
@@ -1000,12 +997,14 @@ pub struct IngesterQueryResponse {
 impl IngesterQueryResponse {
     /// Make a response
     pub fn new(
-        data: Option<RecordBatch>,
+        data: SendableRecordBatchStream,
+        schema: Schema,
         delete_predicates: Vec<Arc<DeletePredicate>>,
         max_sequencer_number: Option<SequenceNumber>,
     ) -> Self {
         Self {
             data,
+            schema,
             delete_predicates,
             max_sequencer_number,
         }
