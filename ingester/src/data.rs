@@ -915,7 +915,7 @@ pub struct IngesterQueryRequest {
     /// Predicate for filtering
     predicate: Option<Predicate>,
     /// Optionally only return rows with a sequence number greater than this
-    greater_than_sequence_number: Option<u64>,
+    greater_than_sequence_number: Option<SequenceNumber>,
 }
 
 impl IngesterQueryRequest {
@@ -929,7 +929,7 @@ impl IngesterQueryRequest {
         min_time: i64,
         max_time: i64,
         predicate: Option<Predicate>,
-        greater_than_sequence_number: Option<u64>,
+        greater_than_sequence_number: Option<SequenceNumber>,
     ) -> Self {
         Self {
             namespace,
@@ -961,6 +961,11 @@ impl TryFrom<proto::IngesterQueryRequest> for IngesterQueryRequest {
 
         let predicate = predicate.map(TryInto::try_into).transpose()?;
         let sequencer_id: i16 = sequencer_id.try_into().scope("sequencer_id")?;
+        let greater_than_sequence_number = greater_than_sequence_number
+            .map(TryInto::try_into)
+            .transpose()
+            .scope("greater_than_sequence_number")?
+            .map(SequenceNumber::new);
 
         Ok(Self::new(
             namespace,
@@ -1057,7 +1062,7 @@ mod tests {
             1,
             20,
             Some(rust_predicate),
-            Some(5),
+            Some(SequenceNumber::new(5)),
         );
 
         let proto_query = proto::IngesterQueryRequest {
