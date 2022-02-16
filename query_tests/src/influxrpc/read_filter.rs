@@ -16,6 +16,7 @@ use datafusion::logical_plan::{col, lit};
 use predicate::rpc_predicate::InfluxRpcPredicate;
 use predicate::PredicateBuilder;
 use query::frontend::influxrpc::InfluxRpcPlanner;
+use test_helpers::assert_contains;
 
 /// runs read_filter(predicate) and compares it to the expected
 /// output
@@ -136,6 +137,71 @@ async fn test_read_filter_data_tag_predicate() {
     ];
 
     run_read_filter_test_case(TwoMeasurements {}, predicate, expected_results).await;
+}
+
+#[tokio::test]
+async fn test_read_filter_invalid_predicate() {
+    let predicate = PredicateBuilder::new()
+        // region > 5 (region is a tag(string) column, so this predicate is invalid)
+        .add_expr(col("region").gt(lit(5i32)))
+        .build();
+    let predicate = InfluxRpcPredicate::new(None, predicate);
+
+    let setup = TwoMeasurements {};
+    for scenario in setup.make().await {
+        let DbScenario {
+            scenario_name, db, ..
+        } = scenario;
+        println!("Running scenario '{}'", scenario_name);
+        println!("Predicate: '{:#?}'", predicate);
+        let planner = InfluxRpcPlanner::new();
+
+        let plans = planner.read_filter(db.as_ref(), predicate.clone()).unwrap();
+
+        let result = db
+            .executor()
+            .new_context(query::exec::ExecutorType::Query)
+            .to_series_and_groups(plans)
+            .await
+            .unwrap_err();
+
+        assert_contains!(result.to_string(), "Error during planning: 'Dictionary(Int32, Utf8) > Int32' can't be evaluated because there isn't a common type to coerce the types to");
+    }
+}
+
+#[tokio::test]
+async fn test_read_filter_unknown_column_in_predicate() {
+    let predicate = PredicateBuilder::new()
+        // myster_column is not a real column, so this predicate is invalid
+        .add_expr(
+            col("baz")
+                .eq(lit(4i32))
+                .or(col("bar").and(col("mystery_region").gt(lit(5i32)))),
+        )
+        .build();
+    let predicate = InfluxRpcPredicate::new(None, predicate);
+
+    let setup = TwoMeasurements {};
+    for scenario in setup.make().await {
+        let DbScenario {
+            scenario_name, db, ..
+        } = scenario;
+        println!("Running scenario '{}'", scenario_name);
+        println!("Predicate: '{:#?}'", predicate);
+        let planner = InfluxRpcPlanner::new();
+
+        let plans = planner.read_filter(db.as_ref(), predicate.clone()).unwrap();
+
+        // This actually passes just fine :thinking:
+        let result = db
+            .executor()
+            .new_context(query::exec::ExecutorType::Query)
+            .to_series_and_groups(plans)
+            .await
+            .unwrap_err();
+
+        assert_contains!(result.to_string(), "Error during planning: 'Dictionary(Int32, Utf8) > Int32' can't be evaluated because there isn't a common type to coerce the types to");
+    }
 }
 
 #[tokio::test]
